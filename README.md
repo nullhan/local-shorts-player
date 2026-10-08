@@ -83,6 +83,10 @@ pnpm preview      # 预览构建产物
 > pnpm 不会读取它，它也**没有和 `pnpm-lock.yaml` 保持同步**。请统一使用 pnpm 安装 ——
 > 用 npm 会得到不同的依赖树，并给这个文件带来无意义的改动。
 
+> **升级 pnpm 时注意**：`package.json` 里的 `packageManager` 字段会被 pnpm 12 记进 `pnpm-lock.yaml`
+> （它会把包管理器自身也一起锁定）。改了它就必须重算 lockfile —— `pnpm install --lockfile-only` ——
+> 否则 CI 会以 `ERR_PNPM_FROZEN_LOCKFILE_WITH_OUTDATED_LOCKFILE` 失败。
+
 ## 部署（GitHub Pages）
 
 线上地址：`https://nullhan.github.io/local-shorts-player`
