@@ -1,0 +1,14 @@
+# pnpm 的「依赖构建脚本白名单」。
+#
+# pnpm 10 起默认拦截依赖的 install / postinstall 脚本（供应链防护），被拦下的依赖会被 pnpm
+# 自动追加进这个文件并留下占位值，需要开发者显式决定 true / false。这里是整理后的结果：
+#
+#   vue-demi   postinstall 要按当前 Vue 版本切换入口文件，必须允许 → true
+#   esbuild    平台二进制其实来自 optionalDependencies，设 false 也能工作；
+#              这里设 true，因为它是 vite 的核心构建工具、来源可信，允许最省事
+#
+# 想更严格可以改成 esbuild: false，并在 CI 里加上 strictDepBuilds: true
+# 把「未审核的构建脚本」从警告升级为硬报错。
+allowBuilds:
+  esbuild: true
+  vue-demi: true

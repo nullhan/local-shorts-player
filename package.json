@@ -1,0 +1,28 @@
+{
+  "name": "local-shorts-player",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "license": "Apache-2.0",
+  "description": "抖音式本地短视频播放器（↑↓ / 滚轮切换 · 按键可自定义 · 画面转向 · Delete 快速删除 · 重复视频清理）",
+  "scripts": {
+    "dev": "vite",
+    "build": "npm run type-check && npm run build-only",
+    "build-only": "vite build",
+    "type-check": "vue-tsc --noEmit",
+    "preview": "vite preview"
+  },
+  "dependencies": {
+    "pinia": "^2.1.7",
+    "vue": "^3.4.38",
+    "vue-router": "^4.4.5"
+  },
+  "devDependencies": {
+    "@types/node": "^20.14.10",
+    "@vitejs/plugin-vue": "^5.1.4",
+    "less": "^4.2.0",
+    "typescript": "~5.4.5",
+    "vite": "^5.4.8",
+    "vue-tsc": "^2.1.6"
+  }
+}
