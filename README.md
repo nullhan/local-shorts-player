@@ -83,6 +83,26 @@ pnpm preview      # 预览构建产物
 > pnpm 不会读取它，它也**没有和 `pnpm-lock.yaml` 保持同步**。请统一使用 pnpm 安装 ——
 > 用 npm 会得到不同的依赖树，并给这个文件带来无意义的改动。
 
+## 部署（GitHub Pages）
+
+线上地址：`https://nullhan.github.io/local-shorts-player`
+
+推到 `main` 分支后由 `.github/workflows/deploy.yml` 自动构建并发布（`pnpm build-only` → 上传 `dist`）。
+首次使用需要在仓库 **Settings → Pages → Build and deployment → Source** 里选择 **GitHub Actions**。
+
+两个容易踩的坑，配置里都已经处理好：
+
+1. **资源路径前缀**：项目页地址带一级路径 `/<repo>/`，所以 `vite.config.ts` 里设置了
+   `base: '/local-shorts-player/'` —— **只在构建时生效**，本地 `pnpm dev` 仍在根路径。
+   少了这一步，页面会去请求 `https://nullhan.github.io/assets/...` 而**白屏**。
+   > 注意：`REPO_NAME` 要和 GitHub 仓库名保持一致，改仓库名就得同步改这里。
+2. **路由不需要重写规则**：用的是 hash 模式，页面路径始终落在 `index.html`，
+   因此不需要额外的 404 兜底配置。
+
+> Pages 走 HTTPS，所以 `showDirectoryPicker`（目录读写 + 真实删除）和 `crypto.subtle`
+> （重复视频内容指纹）这两个依赖安全上下文的 API 都能正常工作。
+> 另外免费账号的 Pages 只支持 Public 仓库。
+
 ## 两种导入模式（重要）
 
 浏览器出于安全限制，对本地文件的可操作能力分两档：

@@ -4,6 +4,7 @@
   "private": true,
   "type": "module",
   "license": "Apache-2.0",
+  "packageManager": "pnpm@12.10.1",
   "description": "抖音式本地短视频播放器（↑↓ / 滚轮切换 · 按键可自定义 · 画面转向 · Delete 快速删除 · 重复视频清理）",
   "scripts": {
     "dev": "vite",
