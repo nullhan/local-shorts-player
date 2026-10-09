@@ -191,6 +191,7 @@ function countOf(sourceId: string): number {
         <li><kbd>R</kbd><span>画面转向 90°</span></li>
         <li><kbd>Shift</kbd><span>+</span><kbd>R</kbd><span>水平镜像</span></li>
         <li><kbd>F</kbd><span>全屏</span></li>
+        <li><kbd>O</kbd><span>打开所在文件夹</span></li>
         <li><kbd>H</kbd><span>快捷键一览</span></li>
       </ul>
       <p class="shortcuts-note">

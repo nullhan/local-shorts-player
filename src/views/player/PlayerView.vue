@@ -4,6 +4,7 @@ import { useRouter } from 'vue-router'
 
 import OsdToast from '@/components/player/OsdToast.vue'
 import DuplicatePanel from '@/components/player/DuplicatePanel.vue'
+import FolderHelperPanel from '@/components/player/FolderHelperPanel.vue'
 import PlaylistPanel from '@/components/player/PlaylistPanel.vue'
 import PlayPulse from '@/components/player/PlayPulse.vue'
 import ProgressBar from '@/components/player/ProgressBar.vue'
@@ -245,6 +246,14 @@ onBeforeUnmount(() => {
         <span><kbd>{{ comboText(store.keymap.toggleHelp) }}</kbd> 全部快捷键</span>
         <span class="spacer" />
         <button
+          v-if="store.folderFilter"
+          class="mode-tag folder-tag"
+          :title="`当前只显示「${store.folderFilter.parentPath || '根目录'}」，点击显示全部`"
+          @click="store.clearFolderFilter()"
+        >
+          只看 {{ store.folderFilterLabel }} · {{ store.playlistCount }} 个 ✕
+        </button>
+        <button
           v-if="store.sourceCount > 1"
           class="mode-tag source-tag"
           :title="store.playlistMode === 'merged' ? '当前合并显示所有文件夹，点击改为分开' : '当前按文件夹分开，点击改为合并'"
@@ -270,8 +279,14 @@ onBeforeUnmount(() => {
     <Transition name="slide-panel">
       <SettingsPanel v-if="store.activePanel === 'settings'" />
     </Transition>
-    <Transition name="slide-panel">
+    <!-- 重复视频：模态对话框（遮罩 + 缩放进入由组件自己负责） -->
+    <Transition name="fade">
       <DuplicatePanel v-if="store.activePanel === 'duplicates'" />
+    </Transition>
+
+    <!-- 打开所在文件夹：本地小助手配置 -->
+    <Transition name="fade">
+      <FolderHelperPanel v-if="store.activePanel === 'folderHelper'" />
     </Transition>
 
     <!-- 快捷键帮助（按当前绑定动态渲染） -->
@@ -615,6 +630,18 @@ onBeforeUnmount(() => {
 
     &:hover {
       background: rgba(143, 196, 255, 0.3);
+    }
+  }
+
+  .folder-tag {
+    background: rgba(175, 169, 236, 0.18);
+    color: #cecbf6;
+    cursor: pointer;
+    white-space: nowrap;
+    transition: background 0.16s var(--ease);
+
+    &:hover {
+      background: rgba(175, 169, 236, 0.32);
     }
   }
 }

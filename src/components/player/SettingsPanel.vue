@@ -403,6 +403,30 @@ function clearBinding(id: ActionId) {
       </section>
 
       <section class="group">
+        <div class="group-title">文件夹</div>
+
+        <div class="row">
+          <span>打开所在文件夹</span>
+          <strong class="value">
+            {{ Object.keys(store.folderRoots).length
+              ? `已登记 ${Object.keys(store.folderRoots).length} 个根目录`
+              : '未配置' }}
+          </strong>
+        </div>
+
+        <button class="wide" @click="store.togglePanel('folderHelper')">
+          <SvgIcon name="folder" :size="15" />
+          配置本地小助手
+        </button>
+
+        <p class="note">
+          浏览器没有打开资源管理器的接口，也不给文件的绝对路径。配好本地小助手后，按
+          <kbd>{{ comboText(store.keymap.openFolder) }}</kbd> 就能在资源管理器里打开并
+          <strong>选中当前视频</strong>；小助手没在运行时，同一个键会退化成「在播放列表里只看这个文件夹」。
+        </p>
+      </section>
+
+      <section class="group">
         <div class="group-title">删除</div>
 
         <div class="row column">

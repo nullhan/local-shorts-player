@@ -63,6 +63,15 @@ function pick(id: string) {
       </button>
     </header>
 
+    <!-- 文件夹筛选（按 O 的应用内跳转） -->
+    <div v-if="store.folderFilter" class="folder-bar">
+      <SvgIcon name="folder" :size="13" />
+      <span class="label">只看</span>
+      <span class="name" :title="store.folderFilter.parentPath">{{ store.folderFilterLabel }}</span>
+      <span class="count">{{ store.playlistCount }} / {{ store.playlistTotal }}</span>
+      <button class="clear" @click="store.clearFolderFilter()">显示全部</button>
+    </div>
+
     <div class="search">
       <input v-model="keyword" type="text" placeholder="搜索文件名 / 路径…" />
     </div>
@@ -174,6 +183,50 @@ function pick(id: string) {
     &:hover {
       background: rgba(255, 255, 255, 0.12);
       color: var(--text-primary);
+    }
+  }
+}
+
+.folder-bar {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  margin: 0 14px 8px;
+  padding: 7px 10px;
+  border-radius: var(--radius-sm);
+  background: rgba(143, 196, 255, 0.14);
+  color: #8fc4ff;
+  font-size: 11.5px;
+
+  .label {
+    color: var(--text-secondary);
+  }
+
+  .name {
+    overflow: hidden;
+    font-weight: 600;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
+  .count {
+    flex: none;
+    color: var(--text-muted);
+    font-variant-numeric: tabular-nums;
+  }
+
+  .clear {
+    flex: none;
+    margin-left: auto;
+    padding: 0 8px;
+    height: 22px;
+    border-radius: 999px;
+    background: rgba(143, 196, 255, 0.22);
+    color: #cfe6ff;
+    font-size: 11px;
+
+    &:hover {
+      background: rgba(143, 196, 255, 0.34);
     }
   }
 }

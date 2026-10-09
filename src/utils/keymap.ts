@@ -36,7 +36,13 @@ export const ACTIONS: ActionMeta[] = [
   { id: 'togglePlaylist', label: '播放列表', group: '界面' },
   { id: 'toggleSettings', label: '设置面板', group: '界面' },
   { id: 'toggleHelp', label: '快捷键帮助', group: '界面' },
-  { id: 'toggleFullscreen', label: '全屏切换', group: '界面' }
+  { id: 'toggleFullscreen', label: '全屏切换', group: '界面' },
+  {
+    id: 'openFolder',
+    label: '打开所在文件夹',
+    group: '界面',
+    tip: '在资源管理器中打开并选中当前视频；小助手未运行时改为在播放列表里筛选该文件夹'
+  }
 ]
 
 export const ACTION_IDS = ACTIONS.map((action) => action.id)
@@ -66,7 +72,9 @@ export const DEFAULT_KEYMAP: Keymap = {
   cycleFit: 'A',
   rotateVideo: 'R',
   flipVideo: 'Shift+R',
-  toggleFullscreen: 'F'
+  toggleFullscreen: 'F',
+  // O = Open folder（单字母里没有语义冲突的一批里挑的）
+  openFolder: 'O'
 }
 
 /** 只按下了修饰键本身，不算一次有效绑定 */

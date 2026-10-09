@@ -59,7 +59,7 @@ export type FitMode = 'contain' | 'cover' | 'fill'
 
 export type SourceMode = 'handle' | 'fallback'
 
-export type PanelType = 'playlist' | 'settings' | 'help' | 'duplicates' | null
+export type PanelType = 'playlist' | 'settings' | 'help' | 'duplicates' | 'folderHelper' | null
 
 /** 播放列表排序字段 */
 export type SortKey = 'default' | 'name' | 'size' | 'mtime'
@@ -91,6 +91,7 @@ export type ActionId =
   | 'rotateVideo'
   | 'flipVideo'
   | 'toggleFullscreen'
+  | 'openFolder'
 
 /** 动作 → 组合键（'' 表示未绑定） */
 export type Keymap = Record<ActionId, string>

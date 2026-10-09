@@ -43,6 +43,13 @@ import {
 } from '@/utils/idb'
 import { DEFAULT_PREFS, clearPrefs, loadPrefs, savePrefs } from '@/utils/prefs'
 import {
+  callHelper,
+  loadFolderRoots,
+  resolveFolderRoot,
+  saveFolderRoots,
+  type FolderRootMap
+} from '@/utils/reveal'
+import {
   IDENTITY_TRANSFORM,
   clearTransforms,
   loadTransforms,
@@ -144,6 +151,22 @@ export const usePlayerStore = defineStore('player', () => {
   const loading = ref(false)
   /** 右侧/底部活动面板，同时只允许打开一个 */
   const activePanel = ref<PanelType>(null)
+  /**
+   * 面板里"当前关注"的条目（重复视频面板会写它）。
+   * 「打开所在文件夹」这类动作需要知道"给谁开"：面板打开时听面板的，否则听正在播放的。
+   * 由面板在挂载期间设置、卸载时清空，避免面板关掉后还指向旧条目。
+   */
+  const contextItem = ref<VideoItem | null>(null)
+
+  /**
+   * 应用内跳转：把播放列表收窄到某个文件夹（`null` = 显示全部）。
+   * 与「本地小助手」共用同一个 O 键 —— 小助手可用时真的打开资源管理器，
+   * 不可用时退化成这个筛选，保证按键永远有反馈。
+   */
+  const folderFilter = ref<{ sourceId: string; parentPath: string } | null>(null)
+
+  /** 各来源登记的根目录绝对路径（浏览器不给，只能用户手填一次） */
+  const folderRoots = ref<FolderRootMap>(loadFolderRoots())
 
   let osdTimer: number | undefined
   let osdSeq = 0
@@ -164,8 +187,9 @@ export const usePlayerStore = defineStore('player', () => {
    * 当前播放列表。
    * - merged：所有来源合并，按 sortKey 排序
    * - separate：只取当前来源，按 sortKey 排序
+   * - 若开了「文件夹筛选」（按 O 的应用内跳转），再收窄到某一个文件夹
    */
-  const playlist = computed<VideoItem[]>(() => {
+  const scopedPlaylist = computed<VideoItem[]>(() => {
     // 读取 sortVersion 让排序规则外的变化（如手动刷新）也能触发重算
     void sortVersion.value
     const scoped =
@@ -177,7 +201,17 @@ export const usePlayerStore = defineStore('player', () => {
     return [...scoped].sort((a, b) => dir * compareItems(a, b, key))
   })
 
+  const playlist = computed<VideoItem[]>(() => {
+    const filter = folderFilter.value
+    if (!filter) return scopedPlaylist.value
+    return scopedPlaylist.value.filter(
+      (item) => item.sourceId === filter.sourceId && item.parentPath === filter.parentPath
+    )
+  })
+
   const playlistCount = computed(() => playlist.value.length)
+  /** 未受文件夹筛选影响的条目数，用于「显示全部（N）」 */
+  const playlistTotal = computed(() => scopedPlaylist.value.length)
   const isEmpty = computed(() => playlist.value.length === 0)
   const currentIndex = computed(() =>
     playlist.value.findIndex((item) => item.id === currentId.value)
@@ -1062,6 +1096,122 @@ export const usePlayerStore = defineStore('player', () => {
 
   function closePanel() {
     activePanel.value = null
+    contextItem.value = null
+  }
+
+  /* ---------------- 打开所在文件夹 ---------------- */
+
+  /** 面板可以借此声明"我现在关注的是哪一条" */
+  function setContextItem(item: VideoItem | null): void {
+    contextItem.value = item
+  }
+
+  /** 当前视频所在文件夹的显示名（筛选条上用） */
+  const folderFilterLabel = computed(() => {
+    const filter = folderFilter.value
+    if (!filter) return ''
+    const tail = filter.parentPath.split('/').filter(Boolean).pop()
+    return tail || findSource(filter.sourceId)?.name || '根目录'
+  })
+
+  /**
+   * 应用内跳转：只看这个文件夹。
+   * 筛选后当前视频可能不在列表里（例如在重复面板里选中的副本属于别的文件夹），
+   * 那就直接切到你操作的那一条，避免播放器突然变空。
+   */
+  function applyFolderFilter(item: VideoItem): void {
+    folderFilter.value = { sourceId: item.sourceId, parentPath: item.parentPath }
+    if (!playlist.value.some((each) => each.id === currentId.value)) select(item.id)
+  }
+
+  function clearFolderFilter(): void {
+    folderFilter.value = null
+  }
+
+  function toggleFolderFilter(item: VideoItem): void {
+    const filter = folderFilter.value
+    if (filter && filter.sourceId === item.sourceId && filter.parentPath === item.parentPath) {
+      folderFilter.value = null
+    } else {
+      applyFolderFilter(item)
+    }
+  }
+
+  // 该文件夹里的条目被删光时自动解除筛选，否则会卡在一个空列表上
+  watch([folderFilter, allItems], () => {
+    const filter = folderFilter.value
+    if (!filter) return
+    const alive = allItems.value.some(
+      (item) => item.sourceId === filter.sourceId && item.parentPath === filter.parentPath
+    )
+    if (!alive) folderFilter.value = null
+  })
+
+  /* ---------------- 根目录登记 ---------------- */
+
+  function setFolderRoot(sourceId: string, path: string, sourceName: string): void {
+    folderRoots.value = {
+      ...folderRoots.value,
+      [sourceId]: { path: path.trim(), sourceName, at: Date.now() }
+    }
+    saveFolderRoots(folderRoots.value)
+  }
+
+  function removeFolderRoot(sourceId: string): void {
+    const next = { ...folderRoots.value }
+    delete next[sourceId]
+    folderRoots.value = next
+    saveFolderRoots(next)
+  }
+
+  /**
+   * 在系统资源管理器中打开「当前关注的那个视频」所在的文件夹。
+   *
+   * 两条路：
+   * 1. 小助手在运行且该来源登记过根目录 → 真的打开资源管理器并选中文件
+   * 2. 否则退化成应用内筛选（保证按键永远有反馈）
+   */
+  async function openFolder(): Promise<void> {
+    const item = contextItem.value ?? current.value
+    if (!item) {
+      showOsd('没有可定位的视频', 'info')
+      return
+    }
+
+    const source = findSource(item.sourceId)
+    const record = resolveFolderRoot(folderRoots.value, item.sourceId, source?.name ?? '')
+
+    if (record) {
+      const result = await callHelper('/reveal', record.path, item.relativePath)
+
+      if (result.status === 'ok') {
+        showFeedback(
+          result.target.folderOnly
+            ? '文件已不在，已打开它所在的文件夹'
+            : `已在资源管理器中选中：${item.name}`,
+          'info',
+          'toast'
+        )
+        return
+      }
+      if (result.status === 'not-found') {
+        showOsd('小助手按登记的路径找不到文件，请在「设置 → 文件夹」核对根目录路径', 'info')
+        return
+      }
+      if (result.status === 'error') {
+        showOsd(`小助手出错：${result.message}`, 'info')
+        return
+      }
+      // unreachable → 落到下面的退化分支
+    }
+
+    toggleFolderFilter(item)
+    const reason = record ? '本地小助手未运行' : '还没登记该文件夹的路径'
+    showFeedback(
+      folderFilter.value ? `${reason}，已改为在播放列表里筛选这个文件夹` : '已恢复显示全部',
+      'info',
+      'toast'
+    )
   }
 
   /* ---------------- 画面转向（逐视频） ---------------- */
@@ -1142,8 +1292,13 @@ export const usePlayerStore = defineStore('player', () => {
     scan,
     loading,
     activePanel,
+    contextItem,
+    folderFilter,
+    folderRoots,
     // getters
     playlistCount,
+    playlistTotal,
+    folderFilterLabel,
     isEmpty,
     currentIndex,
     current,
@@ -1191,6 +1346,13 @@ export const usePlayerStore = defineStore('player', () => {
     reset,
     togglePanel,
     closePanel,
+    setContextItem,
+    openFolder,
+    applyFolderFilter,
+    clearFolderFilter,
+    toggleFolderFilter,
+    setFolderRoot,
+    removeFolderRoot,
     cycleFitMode,
     rotateVideo,
     toggleFlip,

@@ -174,6 +174,10 @@ export function useKeyboardShortcuts(options: { container: Ref<HTMLElement | nul
       case 'toggleFullscreen':
         toggleFullscreen()
         break
+
+      case 'openFolder':
+        void store.openFolder()
+        break
     }
   }
 
@@ -202,6 +206,16 @@ export function useKeyboardShortcuts(options: { container: Ref<HTMLElement | nul
         boosted = true
       }
     }
+
+    /*
+     * 重复视频面板是模态框：Esc 与预览由它自己处理。
+     * 打开期间全局快捷键整体让位 —— 否则 Space 会去切换"背后那个正在播放的视频"，
+     * 而 Delete 更危险：会直接删掉当前播放的视频，而不是列表里勾选的那些。
+     *
+     * 唯一的例外是「打开所在文件夹」：它天然需要跨面板工作（面板里选中一条、按快捷键定位），
+     * 而且它是只读动作，不会误伤任何东西。
+     */
+    if (store.activePanel === 'duplicates' && action !== 'openFolder') return
 
     if (!action) return
     event.preventDefault()
