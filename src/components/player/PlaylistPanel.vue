@@ -25,6 +25,13 @@ const filtered = computed(() => {
   return items.filter((item) => item.relativePath.toLowerCase().includes(query))
 })
 
+/** 只有多来源时才需要标出"这条来自哪个文件夹" */
+const showSource = computed(() => store.sourceCount > 1)
+
+function sourceName(sourceId: string): string {
+  return store.sources.find((source) => source.id === sourceId)?.name ?? '未知来源'
+}
+
 /** 按修改时间排序时，顺带把日期显示出来，方便核对顺序 */
 const showMtime = computed(() => store.sortKey === 'mtime')
 
@@ -92,6 +99,9 @@ function pick(id: string) {
         <span class="info">
           <span class="name">{{ item.name }}</span>
           <span class="path">
+            <template v-if="showSource">
+              <em class="from">{{ sourceName(item.sourceId) }}</em> ·
+            </template>
             {{ item.parentPath || '根目录' }} · {{ formatSize(item.size) }}
             <template v-if="showMtime"> · {{ formatDateTime(item.mtime) }}</template>
           </span>
@@ -306,6 +316,11 @@ function pick(id: string) {
       font-size: 11px;
       text-overflow: ellipsis;
       white-space: nowrap;
+
+      .from {
+        color: #8fc4ff;
+        font-style: normal;
+      }
     }
   }
 }

@@ -13,7 +13,12 @@ const store = usePlayerStore()
 
 const volumePercent = computed(() => Math.round(store.volume * 100))
 
-const supportsRealDelete = computed(() => store.mode === 'handle' && Boolean(store.rootName))
+/** 任意一个可读写来源存在，就说明有能力真实删除 */
+const supportsRealDelete = computed(() => store.canRealDelete)
+
+function countOf(sourceId: string): number {
+  return store.allItems.filter((item) => item.sourceId === sourceId).length
+}
 
 const seekOptions = [3, 5, 10, 15, 30]
 const rateOptions = [0.5, 0.75, 1, 1.25, 1.5, 2]
@@ -441,19 +446,80 @@ function clearBinding(id: ActionId) {
       <section class="group">
         <div class="group-title">数据源</div>
 
-        <div class="source">
-          <span class="label">目录</span>
-          <span class="value">{{ store.rootName || '未绑定目录' }}</span>
-          <span class="tag">{{ store.mode === 'handle' ? '可读写' : '只读（兼容模式）' }}</span>
+        <p class="note">
+          可以同时导入多个文件夹。每个文件夹是一个独立的「来源」，
+          删除时会在它自己所属的文件夹里生效。
+        </p>
+
+        <div v-if="!store.sourceCount" class="source empty-source">还没有导入任何文件夹</div>
+
+        <div v-else class="source-list">
+          <div
+            v-for="source in store.sources"
+            :key="source.id"
+            class="source-item"
+            :class="{ active: source.id === store.effectiveSourceId }"
+          >
+            <button class="source-main" @click="store.setActiveSource(source.id)">
+              <span class="source-name">{{ source.name }}</span>
+              <span class="source-meta">
+                {{ countOf(source.id) }} 个视频 ·
+                {{ source.mode === 'handle' ? '可读写' : '只读（兼容）' }}
+              </span>
+            </button>
+            <button class="source-remove" title="移除该来源（不删除磁盘文件）" @click="store.removeSource(source.id)">
+              <SvgIcon name="close" :size="13" />
+            </button>
+          </div>
         </div>
 
         <div class="source-actions">
-          <button class="wide" @click="store.importByPicker()">
+          <button class="wide" :disabled="store.loading" @click="store.importByPicker()">
             <SvgIcon name="folder" :size="15" />
-            切换文件夹
+            {{ store.sourceCount ? '添加文件夹' : '选择文件夹' }}
           </button>
-          <button class="wide ghost" @click="store.forgetSession()">清除记忆的目录</button>
+          <button
+            v-if="store.sourceCount"
+            class="wide ghost"
+            :disabled="store.loading"
+            @click="store.restoreLastSession()"
+          >
+            <SvgIcon name="undo" :size="15" />
+            重新扫描全部来源
+          </button>
         </div>
+
+        <div v-if="store.sourceCount" class="row column">
+          <span>多文件夹播放方式</span>
+          <div class="chips">
+            <button
+              class="chip"
+              :class="{ on: store.playlistMode === 'merged' }"
+              @click="store.setPlaylistMode('merged')"
+            >
+              合并为一个列表
+            </button>
+            <button
+              class="chip"
+              :class="{ on: store.playlistMode === 'separate' }"
+              @click="store.setPlaylistMode('separate')"
+            >
+              每个文件夹独立
+            </button>
+          </div>
+        </div>
+
+        <p class="note">
+          <strong>合并</strong>：所有文件夹的视频混在一起，按排序规则上下切换，适合同一批内容分散在几处的情况。
+          <br />
+          <strong>独立</strong>：只播放当前选中的文件夹，在上面的列表里点击可切换；
+          重复视频扫描仍然会跨所有文件夹进行。
+        </p>
+
+        <button v-if="store.sourceCount" class="wide ghost danger-text" @click="store.removeAllSources()">
+          <SvgIcon name="trash" :size="15" />
+          移除全部来源
+        </button>
       </section>
 
       <section class="group">
@@ -886,6 +952,80 @@ function clearBinding(id: ActionId) {
   .tag {
     grid-column: 2;
     color: var(--text-muted);
+  }
+}
+
+.empty-source {
+  display: block;
+  color: var(--text-muted);
+}
+
+.source-list {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.source-item {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  border: 1px solid var(--border-soft);
+  border-radius: var(--radius-sm);
+  background: rgba(255, 255, 255, 0.05);
+  overflow: hidden;
+
+  &.active {
+    border-color: var(--accent);
+    background: var(--accent-soft);
+  }
+}
+
+.source-main {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  padding: 8px 10px;
+  text-align: left;
+
+  .source-name {
+    overflow: hidden;
+    color: var(--text-primary);
+    font-size: 12.5px;
+    font-weight: 500;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
+  .source-meta {
+    color: var(--text-muted);
+    font-size: 10.5px;
+  }
+}
+
+.source-remove {
+  flex: none;
+  display: grid;
+  place-items: center;
+  width: 28px;
+  height: 28px;
+  margin-right: 5px;
+  border-radius: 6px;
+  color: var(--text-muted);
+
+  &:hover {
+    background: rgba(217, 44, 63, 0.2);
+    color: #ff9aa8;
+  }
+}
+
+.danger-text {
+  color: #ff9aa8;
+
+  &:hover {
+    background: rgba(217, 44, 63, 0.14);
   }
 }
 

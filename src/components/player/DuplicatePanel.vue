@@ -11,6 +11,18 @@ const store = usePlayerStore()
 const selected = ref<Set<string>>(new Set())
 const confirming = ref(false)
 
+/** 多来源时标出每个副本属于哪个文件夹 —— 跨文件夹重复的关键信息 */
+const showSource = computed(() => store.sourceCount > 1)
+
+function sourceName(sourceId: string): string {
+  return store.sources.find((source) => source.id === sourceId)?.name ?? '未知来源'
+}
+
+/** 该组是否跨文件夹（用于提示"这一类重复横跨多个文件夹"） */
+function isCrossSource(items: VideoItem[]): boolean {
+  return new Set(items.map((item) => item.sourceId)).size > 1
+}
+
 /**
  * 每次扫描结果变化后重建默认选择：每组保留第一个（列表顺序里的第一条），
  * 其余全部勾上 —— 也就是"删掉多余的副本"这个最常见的意图。
@@ -175,6 +187,7 @@ async function confirmRemove() {
           <section v-for="group in store.duplicates" :key="group.fingerprint" class="group">
             <div class="group-head">
               <strong>{{ group.items.length }} 个相同文件</strong>
+              <span v-if="isCrossSource(group.items)" class="cross">跨文件夹</span>
               <span>{{ formatSize(group.size) }} / 个</span>
             </div>
             <div class="group-body">
@@ -194,7 +207,12 @@ async function confirmRemove() {
                     {{ item.name }}
                     <em v-if="index === 0 && !isSelected(item.id)" class="keep">保留</em>
                   </span>
-                  <span class="path">{{ item.parentPath || '根目录' }}</span>
+                  <span class="path">
+                    <template v-if="showSource">
+                      <em class="from">{{ sourceName(item.sourceId) }}</em> ·
+                    </template>
+                    {{ item.parentPath || '根目录' }}
+                  </span>
                   <span class="date">
                     {{ formatSize(item.size) }} · {{ formatDateTime(item.mtime) }}
                   </span>
@@ -477,6 +495,16 @@ async function confirmRemove() {
     color: var(--text-primary);
     font-weight: 600;
   }
+
+  .cross {
+    margin-left: auto;
+    margin-right: 8px;
+    padding: 0 7px;
+    border-radius: 999px;
+    background: rgba(143, 196, 255, 0.16);
+    color: #8fc4ff;
+    font-size: 10px;
+  }
 }
 
 .group-body {
@@ -548,6 +576,11 @@ async function confirmRemove() {
     font-size: 11px;
     text-overflow: ellipsis;
     white-space: nowrap;
+  }
+
+  .path .from {
+    color: #8fc4ff;
+    font-style: normal;
   }
 }
 

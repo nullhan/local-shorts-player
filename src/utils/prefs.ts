@@ -4,6 +4,7 @@ import type {
   Keymap,
   LoopMode,
   PlayerPrefs,
+  PlaylistMode,
   SortDir,
   SortKey
 } from '@/types'
@@ -26,6 +27,7 @@ const LOOP_MODES: LoopMode[] = ['loop', 'once']
 const DELETE_MODES: DeleteMode[] = ['trash', 'permanent']
 const SORT_KEYS: SortKey[] = ['default', 'name', 'size', 'mtime']
 const SORT_DIRS: SortDir[] = ['asc', 'desc']
+const PLAYLIST_MODES: PlaylistMode[] = ['merged', 'separate']
 
 /** 方向键步进允许的范围（秒） */
 export const SEEK_STEP_MIN = 1
@@ -44,7 +46,8 @@ export const DEFAULT_PREFS: PlayerPrefs = {
   osdImportant: true,
   sortKey: 'default',
   sortDir: 'asc',
-  keybindings: { ...DEFAULT_KEYMAP }
+  keybindings: { ...DEFAULT_KEYMAP },
+  playlistMode: 'merged'
 }
 
 function pickEnum<T extends string>(value: unknown, allowed: T[], fallback: T): T {
@@ -95,7 +98,8 @@ function sanitize(raw: unknown): PlayerPrefs {
     osdImportant: pickBool(input.osdImportant, DEFAULT_PREFS.osdImportant),
     sortKey: pickEnum(input.sortKey, SORT_KEYS, DEFAULT_PREFS.sortKey),
     sortDir: pickEnum(input.sortDir, SORT_DIRS, DEFAULT_PREFS.sortDir),
-    keybindings: pickKeymap(input.keybindings)
+    keybindings: pickKeymap(input.keybindings),
+    playlistMode: pickEnum(input.playlistMode, PLAYLIST_MODES, DEFAULT_PREFS.playlistMode)
   }
 }
 

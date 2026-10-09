@@ -12,12 +12,14 @@ const store = usePlayerStore()
 const fileInput = ref<HTMLInputElement | null>(null)
 const dragging = ref(false)
 const hasSession = ref(false)
+const savedCount = ref(0)
 const restoring = ref(false)
 
 const supportsPicker = typeof window !== 'undefined' && Boolean(window.showDirectoryPicker)
 
 onMounted(async () => {
   hasSession.value = await store.hasSavedSession()
+  savedCount.value = store.sourceCount
 })
 
 async function startPlay() {
@@ -25,9 +27,13 @@ async function startPlay() {
   await router.push({ name: 'play' })
 }
 
+/**
+ * 选择文件夹后停留在本页，方便继续添加下一个文件夹。
+ * 已经导入过内容时把按钮语义改成"继续添加"，由用户自己决定何时开始播放。
+ */
 async function handlePick() {
-  const ok = await store.importByPicker()
-  if (ok) await startPlay()
+  await store.importByPicker()
+  savedCount.value = store.sourceCount
 }
 
 async function handleRestore() {
@@ -35,7 +41,6 @@ async function handleRestore() {
   try {
     const ok = await store.restoreLastSession()
     if (ok) await startPlay()
-    else store.showOsd('上次的目录已失效，请重新选择', 'info')
   } finally {
     restoring.value = false
   }
@@ -48,9 +53,9 @@ function openFileDialog() {
 async function handleFileChange(event: Event) {
   const input = event.target as HTMLInputElement
   if (!input.files?.length) return
-  const ok = await store.importByFileList(input.files)
+  await store.importByFileList(input.files)
   input.value = ''
-  if (ok) await startPlay()
+  savedCount.value = store.sourceCount
 }
 
 async function handleDrop(event: DragEvent) {
@@ -70,8 +75,8 @@ async function handleDrop(event: DragEvent) {
     try {
       const handle = await getAsFileSystemHandle.call(items![0])
       if (handle && handle.kind === 'directory') {
-        const ok = await store.importByDirectoryHandle(handle as FileSystemDirectoryHandle)
-        if (ok) await startPlay()
+        await store.importByDirectoryHandle(handle as FileSystemDirectoryHandle)
+        savedCount.value = store.sourceCount
         return
       }
     } catch {
@@ -79,8 +84,12 @@ async function handleDrop(event: DragEvent) {
     }
   }
 
-  const ok = await store.importByFileList(files)
-  if (ok) await startPlay()
+  await store.importByFileList(files)
+  savedCount.value = store.sourceCount
+}
+
+function countOf(sourceId: string): number {
+  return store.allItems.filter((item) => item.sourceId === sourceId).length
 }
 </script>
 
@@ -106,7 +115,9 @@ async function handleDrop(event: DragEvent) {
       <div class="actions">
         <button v-if="supportsPicker" class="btn primary" :disabled="store.loading" @click="handlePick">
           <SvgIcon name="folder" :size="18" />
-          <span>{{ store.loading ? '正在扫描…' : '选择视频文件夹' }}</span>
+          <span>
+            {{ store.loading ? '正在扫描…' : store.sourceCount ? '继续添加文件夹' : '选择视频文件夹' }}
+          </span>
         </button>
         <button class="btn" :disabled="store.loading" @click="openFileDialog">
           <SvgIcon name="import" :size="18" />
@@ -114,16 +125,36 @@ async function handleDrop(event: DragEvent) {
         </button>
         <button v-if="hasSession" class="btn ghost" :disabled="restoring" @click="handleRestore">
           <SvgIcon name="undo" :size="18" />
-          <span>{{ restoring ? '恢复中…' : `恢复上次：${store.rootName || '上次目录'}` }}</span>
+          <span>{{ restoring ? '恢复中…' : `恢复上次（${savedCount} 个文件夹）` }}</span>
         </button>
       </div>
 
       <p class="hint">
         {{ supportsPicker
-          ? '推荐方式支持自动递归子目录，并能把删除的文件真实移入回收站'
+          ? '可以多次点击添加不同路径的文件夹，所有视频会自动汇总'
           : '当前浏览器不支持目录选择器，建议使用 Chrome / Edge 获得完整删除能力' }}
       </p>
-      <p class="hint">也可以直接把文件夹拖拽到本页面</p>
+      <p class="hint">也可以直接把文件夹拖拽到本页面（支持一次拖入多个）</p>
+
+      <!-- 已导入的来源列表：允许逐个移除，或直接开始播放 -->
+      <div v-if="store.sourceCount" class="sources">
+        <div class="sources-head">
+          <span>已添加 {{ store.sourceCount }} 个文件夹 · 共 {{ store.playlistCount }} 个视频</span>
+          <button class="link" @click="store.removeAllSources()">全部移除</button>
+        </div>
+        <div class="source-rows">
+          <div v-for="source in store.sources" :key="source.id" class="source-row">
+            <SvgIcon name="folder" :size="15" />
+            <span class="row-name">{{ source.name }}</span>
+            <span class="row-meta">
+              {{ countOf(source.id) }} 个 · {{ source.mode === 'handle' ? '可读写' : '只读' }}
+            </span>
+            <button class="row-remove" title="移除该来源" @click="store.removeSource(source.id)">
+              <SvgIcon name="close" :size="12" />
+            </button>
+          </div>
+        </div>
+      </div>
 
       <div v-if="store.scan.scanning || store.playlistCount" class="scan-bar">
         <template v-if="store.scan.scanning">
@@ -315,6 +346,81 @@ async function handleDrop(event: DragEvent) {
     align-items: center;
     gap: 6px;
     color: #3ddc84;
+  }
+}
+
+.sources {
+  margin-top: 4px;
+  padding: 12px 14px;
+  border: 1px solid var(--border-soft);
+  border-radius: var(--radius-md);
+  background: var(--bg-panel);
+}
+
+.sources-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 9px;
+  color: var(--text-secondary);
+  font-size: 12.5px;
+}
+
+.link {
+  color: #ff9aa8;
+  font-size: 12px;
+
+  &:hover {
+    text-decoration: underline;
+  }
+}
+
+.source-rows {
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+  max-height: 168px;
+  overflow-y: auto;
+}
+
+.source-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 7px 9px;
+  border-radius: var(--radius-sm);
+  background: rgba(255, 255, 255, 0.05);
+  color: var(--text-secondary);
+  font-size: 12.5px;
+
+  .row-name {
+    flex: 1;
+    min-width: 0;
+    overflow: hidden;
+    color: var(--text-primary);
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
+  .row-meta {
+    flex: none;
+    color: var(--text-muted);
+    font-size: 11px;
+  }
+}
+
+.row-remove {
+  flex: none;
+  display: grid;
+  place-items: center;
+  width: 22px;
+  height: 22px;
+  border-radius: 5px;
+  color: var(--text-muted);
+
+  &:hover {
+    background: rgba(217, 44, 63, 0.2);
+    color: #ff9aa8;
   }
 }
 

@@ -11,16 +11,18 @@ import type {
   OsdMessage,
   PanelType,
   PlayerPrefs,
+  PlaylistMode,
   PulseMessage,
   ScanProgress,
   SortDir,
   SortKey,
   SourceMode,
   TrashRecord,
-  VideoItem
+  VideoItem,
+  VideoSource
 } from '@/types'
 import { ACTION_LABELS, DEFAULT_KEYMAP } from '@/utils/keymap'
-import { clamp, naturalCompare } from '@/utils/media'
+import { clamp, hashString, naturalCompare } from '@/utils/media'
 import { findDuplicates, supportsContentHash, type DuplicateGroup } from '@/utils/hash'
 import {
   TRASH_DIR,
@@ -29,9 +31,16 @@ import {
   revokeItems,
   scanByFileList,
   scanByHandle,
-  trashByHandle
+  trashByHandle,
+  type ScanSource
 } from '@/utils/fs'
-import { clearRootHandle, loadRootHandle, saveRootHandle } from '@/utils/idb'
+import {
+  clearAllHandles,
+  loadSourceHandles,
+  migrateLegacyRootHandle,
+  removeSourceHandle,
+  saveSourceHandle
+} from '@/utils/idb'
 import { DEFAULT_PREFS, clearPrefs, loadPrefs, savePrefs } from '@/utils/prefs'
 import {
   IDENTITY_TRANSFORM,
@@ -57,7 +66,12 @@ const SORT_DEFAULT_DIR: Record<SortKey, SortDir> = {
   mtime: 'desc'
 }
 
-export type { DeleteMode, FitMode, LoopMode, PanelType, SourceMode, SortKey, SortDir }
+export type { DeleteMode, FitMode, LoopMode, PanelType, PlaylistMode, SourceMode, SortKey, SortDir }
+
+export const PLAYLIST_MODE_LABELS: Record<PlaylistMode, string> = {
+  merged: '合并为一个列表',
+  separate: '每个文件夹独立'
+}
 
 export const FIT_MODE_LABELS: Record<FitMode, string> = {
   contain: '完整显示',
@@ -73,12 +87,15 @@ export const SORT_LABELS: Record<SortKey, string> = {
 }
 
 export const usePlayerStore = defineStore('player', () => {
-  const playlist = ref<VideoItem[]>([])
+  /**
+   * 所有来源扫描出的全部视频，是唯一的数据源。
+   * 界面上看到的 playlist 由它按「播放列表模式」派生，不再直接改 playlist。
+   */
+  const allItems = ref<VideoItem[]>([])
+  const sources = ref<VideoSource[]>([])
   const currentId = ref<string | null>(null)
-  const rootName = ref('')
-
-  const root = ref<FileSystemDirectoryHandle | null>(null)
-  const mode = ref<SourceMode>('fallback')
+  /** separate 模式下当前正在看哪个来源 */
+  const activeSourceId = ref<string | null>(null)
 
   // 首屏即读取上次偏好，避免出现"先默认再跳变"
   const initial = loadPrefs()
@@ -99,15 +116,19 @@ export const usePlayerStore = defineStore('player', () => {
   const sortKey = ref<SortKey>(initial.sortKey)
   const sortDir = ref<SortDir>(initial.sortDir)
   const keymap = ref<Keymap>({ ...initial.keybindings })
+  /** 多个来源合并成一个列表，还是按来源分开播放 */
+  const playlistMode = ref<PlaylistMode>(initial.playlistMode)
+  /** 强制重排用的版本号：排序规则本身没变但需要重新计算时用 */
+  const sortVersion = ref(0)
   /** 设置面板正在录制按键时为 true，全局快捷键暂时让位 */
   const capturingKey = ref(false)
 
   const osd = ref<OsdMessage | null>(null)
   const pulse = ref<PulseMessage | null>(null)
   const trash = ref<TrashRecord[]>([])
-  /** 逐视频的画面转向（旋转 / 镜像），key 为 VideoItem.id */
+  /** 逐视频的画面转向（旋转 / 镜像），key 为 VideoItem.contentKey */
   const transforms = ref<Record<string, VideoTransform>>(loadTransforms())
-  /** 内容重复的视频分组 */
+  /** 内容重复的视频分组，item 用 allItems 里的条目 */
   const duplicates = ref<DuplicateGroup<VideoItem>[]>([])
   const duplicateScan = ref<DuplicateScanProgress>({
     scanning: false,
@@ -130,6 +151,32 @@ export const usePlayerStore = defineStore('player', () => {
   let pulseSeq = 0
   let prefsTimer: number | undefined
 
+  /* ---------------- 派生：播放列表 ---------------- */
+
+  /** separate 模式下正在看的来源；没显式选过就取第一个 */
+  const effectiveSourceId = computed(() => {
+    if (!sources.value.length) return null
+    const exists = sources.value.some((source) => source.id === activeSourceId.value)
+    return exists ? activeSourceId.value : sources.value[0].id
+  })
+
+  /**
+   * 当前播放列表。
+   * - merged：所有来源合并，按 sortKey 排序
+   * - separate：只取当前来源，按 sortKey 排序
+   */
+  const playlist = computed<VideoItem[]>(() => {
+    // 读取 sortVersion 让排序规则外的变化（如手动刷新）也能触发重算
+    void sortVersion.value
+    const scoped =
+      playlistMode.value === 'separate' && effectiveSourceId.value
+        ? allItems.value.filter((item) => item.sourceId === effectiveSourceId.value)
+        : allItems.value
+    const dir = sortDir.value === 'asc' ? 1 : -1
+    const key = sortKey.value
+    return [...scoped].sort((a, b) => dir * compareItems(a, b, key))
+  })
+
   const playlistCount = computed(() => playlist.value.length)
   const isEmpty = computed(() => playlist.value.length === 0)
   const currentIndex = computed(() =>
@@ -138,13 +185,33 @@ export const usePlayerStore = defineStore('player', () => {
   const current = computed<VideoItem | null>(
     () => playlist.value[currentIndex.value] ?? null
   )
-  const canUndo = computed(() => trash.value.length > 0 && mode.value === 'handle')
+  const sourceCount = computed(() => sources.value.length)
+
+  /** 当前来源（separate 模式或界面展示用） */
+  const activeSource = computed<VideoSource | null>(
+    () => sources.value.find((source) => source.id === effectiveSourceId.value) ?? null
+  )
+
+  /** 是否至少有一个来源处于可读写模式（决定能否真实删除） */
+  const canRealDelete = computed(() =>
+    sources.value.some((source) => source.mode === 'handle' && source.handle)
+  )
+
+  /** 由于本次会话内的删除/还原而变化，用于让 playlist 重新计算 */
+  function touchPlaylist() {
+    sortVersion.value += 1
+  }
+
+  /** 有可撤销的删除，且原来源仍可用 */
+  const canUndo = computed(() =>
+    trash.value.some((record) => Boolean(findSource(record.sourceId)?.handle))
+  )
 
   /** 当前视频的画面转向（没有记录就是原始方向） */
   const currentTransform = computed<VideoTransform>(() => {
-    const id = currentId.value
-    if (!id) return IDENTITY_TRANSFORM
-    return transforms.value[id] ?? IDENTITY_TRANSFORM
+    const item = current.value
+    if (!item) return IDENTITY_TRANSFORM
+    return transforms.value[item.contentKey] ?? IDENTITY_TRANSFORM
   })
 
   /** 当前视频是否被调整过转向，供界面显示状态 */
@@ -173,7 +240,8 @@ export const usePlayerStore = defineStore('player', () => {
       osdImportant: osdImportant.value,
       sortKey: sortKey.value,
       sortDir: sortDir.value,
-      keybindings: { ...keymap.value }
+      keybindings: { ...keymap.value },
+      playlistMode: playlistMode.value
     }
   }
 
@@ -192,7 +260,8 @@ export const usePlayerStore = defineStore('player', () => {
       osdImportant,
       sortKey,
       sortDir,
-      keymap
+      keymap,
+      playlistMode
     ],
     () => {
       if (prefsTimer) window.clearTimeout(prefsTimer)
@@ -276,12 +345,6 @@ export const usePlayerStore = defineStore('player', () => {
     }, PULSE_DURATION)
   }
 
-  function setPlaylist(items: VideoItem[]) {
-    revokeItems(playlist.value)
-    playlist.value = items
-    currentId.value = items.length ? items[0].id : null
-  }
-
   function select(id: string) {
     if (playlist.value.some((item) => item.id === id)) currentId.value = id
   }
@@ -318,23 +381,21 @@ export const usePlayerStore = defineStore('player', () => {
     }
   }
 
-  /** 按当前 sortKey / sortDir 原地重排播放列表（当前视频不变，索引跟随） */
+  /**
+   * playlist 已经是按 sortKey/sortDir 派生的，这里只需要触发重算。
+   * 保留这个方法名是为了不改动各处的调用点。
+   */
   function applySort() {
-    const dir = sortDir.value === 'asc' ? 1 : -1
-    const key = sortKey.value
-    const sorted = [...playlist.value].sort((a, b) => dir * compareItems(a, b, key))
-    playlist.value = sorted
+    touchPlaylist()
   }
 
   function setSort(key: SortKey) {
     sortKey.value = key
     sortDir.value = SORT_DEFAULT_DIR[key]
-    applySort()
   }
 
   function toggleSortDir() {
     sortDir.value = sortDir.value === 'asc' ? 'desc' : 'asc'
-    applySort()
   }
 
   /* ---------------- 按键绑定 ---------------- */
@@ -394,21 +455,88 @@ export const usePlayerStore = defineStore('player', () => {
     showFeedback(`${arrow} ${Math.abs(delta)} 秒`, 'seek', 'ghost')
   }
 
-  /* ---------------- 导入 ---------------- */
+  /* ---------------- 来源管理 ---------------- */
 
-  async function applyScan(result: Awaited<ReturnType<typeof scanByHandle>>) {
-    mode.value = result.mode
-    root.value = result.root
-    setPlaylist(result.items)
-    applySort()
-    if (result.items.length === 0) {
-      showOsd('未找到视频文件', 'info')
-    } else {
-      showOsd(`已导入 ${result.items.length} 个视频`, 'info')
-    }
+  /** 生成不会与现有来源冲突的 id（同名文件夹也能各占一条） */
+  function makeSourceId(name: string): string {
+    const base = hashString(`${name}|${Date.now()}|${Math.random()}`)
+    return sources.value.some((source) => source.id === base) ? `${base}-${Date.now()}` : base
   }
 
-  /** 首选：目录选择器（支持自动递归 + 真实删除 + 会话恢复） */
+  function findSource(id: string): VideoSource | null {
+    return sources.value.find((source) => source.id === id) ?? null
+  }
+
+  /** 某个来源下的条目（不受 merged/separate 影响，用于删除后补位等） */
+  function itemsOfSource(id: string): VideoItem[] {
+    return allItems.value.filter((item) => item.sourceId === id)
+  }
+
+  /**
+   * 把一次扫描结果作为一个新来源接入。
+   * 已存在相同名字且相同句柄的来源会被替换（重新选同一个文件夹时避免重复），
+   * 否则追加为新的来源。
+   */
+  async function addSource(
+    source: VideoSource,
+    result: Awaited<ReturnType<typeof scanByHandle>>
+  ): Promise<{ added: number; replaced: boolean }> {
+    // 命中已有来源：同 id，或者同名的可读写句柄（isSameEntry 判断为同一目录）
+    let target = findSource(source.id)
+    let replaced = false
+    if (!target && source.handle) {
+      for (const existing of sources.value) {
+        if (!existing.handle || existing.name !== source.name) continue
+        try {
+          if (existing.handle.isSameEntry && (await existing.handle.isSameEntry(source.handle))) {
+            target = existing
+            break
+          }
+        } catch {
+          /* 句柄失效则当新来源处理 */
+        }
+      }
+    }
+
+    const sourceId = target ? target.id : source.id
+    const items = result.items.map((item) => ({ ...item, sourceId }))
+
+    if (target) {
+      // 换掉旧来源的条目
+      revokeItems(itemsOfSource(target.id))
+      allItems.value = allItems.value.filter((item) => item.sourceId !== target.id)
+      sources.value = sources.value.map((entry) =>
+        entry.id === target!.id
+          ? { ...entry, handle: source.handle, mode: source.mode, name: source.name }
+          : entry
+      )
+      replaced = true
+    } else {
+      sources.value = [...sources.value, { ...source, id: sourceId }]
+    }
+
+    allItems.value = [...allItems.value, ...items]
+    if (source.handle) {
+      await saveSourceHandle({ ...source, id: sourceId })
+    }
+    touchPlaylist()
+    return { added: items.length, replaced }
+  }
+
+  /** 导入完成后统一收尾：定位当前视频 + 提示 */
+  function finishImport(total: number, skipped: number, hint = '') {
+    if (!currentId.value || !playlist.value.some((item) => item.id === currentId.value)) {
+      currentId.value = playlist.value.length ? playlist.value[0].id : null
+    }
+    if (!total) {
+      showOsd('未找到视频文件', 'info')
+      return
+    }
+    const suffix = skipped > 0 ? `，跳过 ${skipped} 个非视频文件` : ''
+    showOsd(`已导入 ${total} 个视频${suffix}${hint}`, 'info')
+  }
+
+  /** 首选：目录选择器。可连续调用以一次添加多个文件夹 */
   async function importByPicker(): Promise<boolean> {
     if (!window.showDirectoryPicker) {
       showOsd('当前浏览器不支持目录选择，请使用拖拽或「选择文件夹」', 'info')
@@ -417,12 +545,19 @@ export const usePlayerStore = defineStore('player', () => {
     loading.value = true
     try {
       const handle = await window.showDirectoryPicker({ mode: 'readwrite' })
-      rootName.value = handle.name
-      const result = await scanByHandle(handle, (progress) => {
+      const source: VideoSource = {
+        id: makeSourceId(handle.name),
+        name: handle.name,
+        handle,
+        mode: 'handle',
+        addedAt: Date.now()
+      }
+      const result = await scanByHandle(handle, source, (progress) => {
         scan.value = progress
       })
-      await applyScan(result)
-      await saveRootHandle(handle)
+      const { added, replaced } = await addSource(source, result)
+      activeSourceId.value = source.id
+      finishImport(added, result.skipped, replaced ? '（已更新该文件夹）' : '')
       return true
     } catch (error) {
       const name = (error as DOMException)?.name
@@ -439,12 +574,19 @@ export const usePlayerStore = defineStore('player', () => {
   async function importByDirectoryHandle(handle: FileSystemDirectoryHandle): Promise<boolean> {
     loading.value = true
     try {
-      rootName.value = handle.name
-      const result = await scanByHandle(handle, (progress) => {
+      const source: VideoSource = {
+        id: makeSourceId(handle.name),
+        name: handle.name,
+        handle,
+        mode: 'handle',
+        addedAt: Date.now()
+      }
+      const result = await scanByHandle(handle, source, (progress) => {
         scan.value = progress
       })
-      await applyScan(result)
-      await saveRootHandle(handle)
+      const { added, replaced } = await addSource(source, result)
+      activeSourceId.value = source.id
+      finishImport(added, result.skipped, replaced ? '（已更新该文件夹）' : '')
       return result.items.length > 0
     } catch {
       showOsd('目录读取失败，请改用其它方式导入', 'info')
@@ -458,65 +600,190 @@ export const usePlayerStore = defineStore('player', () => {
   async function importByFileList(fileList: FileList | File[]): Promise<boolean> {
     loading.value = true
     try {
-      const result = await scanByFileList(fileList, (progress) => {
+      const files = Array.from(fileList)
+      // 用 webkitRelativePath 的顶层目录名作为来源名；纯文件拖拽时用时间戳兜底
+      const first = files[0] as File & { webkitRelativePath?: string }
+      const topDir = first?.webkitRelativePath?.split('/')[0]
+      const name = topDir || `拖入的文件夹 ${sources.value.length + 1}`
+
+      const source: VideoSource = {
+        id: makeSourceId(name),
+        name,
+        handle: null,
+        mode: 'fallback',
+        addedAt: Date.now()
+      }
+      const result = await scanByFileList(files, source, (progress) => {
         scan.value = progress
       })
-      root.value = null
-      await applyScan(result)
-      if (result.items.length) {
-        showOsd(
-          `已导入 ${result.items.length} 个视频（浏览器限制：删除仅移出列表）`,
-          'info'
-        )
-      }
+      const { added } = await addSource(source, result)
+      activeSourceId.value = source.id
+      finishImport(
+        added,
+        result.skipped,
+        added ? '（浏览器限制：这些视频只能移出列表，无法删除磁盘文件）' : ''
+      )
       return result.items.length > 0
     } finally {
       loading.value = false
     }
   }
 
-  /** 尝试恢复上次的目录，需要用户手势触发权限确认 */
+  /** 是否至少记住了一个可恢复的来源 */
+  async function hasSavedSession(): Promise<boolean> {
+    const stored = await loadSourceHandles()
+    if (stored.length) return true
+    return Boolean(await migrateLegacyRootHandle())
+  }
+
+  /** 尝试恢复上次的全部来源（需要用户手势触发权限确认） */
   async function restoreLastSession(): Promise<boolean> {
-    const handle = await loadRootHandle()
-    if (!handle) return false
-    const granted = handle.queryPermission
-      ? (await handle.queryPermission({ mode: 'readwrite' })) === 'granted'
-      : true
-    if (!granted) return false
-    rootName.value = handle.name
-    const result = await scanByHandle(handle, (progress) => {
-      scan.value = progress
-    })
-    await applyScan(result)
+    // 旧版本单目录记忆迁移
+    await migrateLegacyRootHandle()
+    const stored = await loadSourceHandles()
+    if (!stored.length) return false
+
+    loading.value = true
+    let restored = 0
+    let videos = 0
+    let skippedFiles = 0
+    try {
+      for (const record of stored) {
+        const handle = record.handle
+        const granted = handle.queryPermission
+          ? (await handle.queryPermission({ mode: 'readwrite' })) === 'granted'
+          : true
+        if (!granted) {
+          // 没有被授权就跳过，但保留记忆，下次仍可再试
+          continue
+        }
+        const source: VideoSource = {
+          id: record.id,
+          name: record.name,
+          handle,
+          mode: 'handle',
+          addedAt: record.addedAt
+        }
+        const result = await scanByHandle(handle, source, (progress) => {
+          scan.value = progress
+        })
+        const { added } = await addSource(source, result)
+        videos += added
+        skippedFiles += result.skipped
+        restored += 1
+      }
+    } finally {
+      loading.value = false
+    }
+
+    if (!restored) {
+      showOsd('上次的目录已失效，请重新选择', 'info')
+      return false
+    }
+    finishImport(videos, skippedFiles, restored > 1 ? `（来自 ${restored} 个文件夹）` : '')
     return true
   }
 
-  async function hasSavedSession(): Promise<boolean> {
-    return Boolean(await loadRootHandle())
+  /** 只移除来源及其条目，不碰磁盘文件 */
+  function removeSource(id: string): void {
+    const source = findSource(id)
+    if (!source) return
+    const items = itemsOfSource(id)
+    revokeItems(items)
+    const ids = new Set(items.map((item) => item.id))
+    allItems.value = allItems.value.filter((item) => item.sourceId !== id)
+    sources.value = sources.value.filter((entry) => entry.id !== id)
+    trash.value = trash.value.filter((record) => record.sourceId !== id)
+    duplicates.value = duplicates.value
+      .map((group) => ({ ...group, items: group.items.filter((item) => !ids.has(item.id)) }))
+      .filter((group) => group.items.length > 1)
+    if (activeSourceId.value === id) activeSourceId.value = null
+    void removeSourceHandle(id)
+    touchPlaylist()
+    if (currentId.value && ids.has(currentId.value)) {
+      currentId.value = playlist.value.length ? playlist.value[0].id : null
+    }
+    showOsd(`已移除来源：${source.name}（磁盘文件未改动）`, 'info')
   }
 
+  function removeAllSources(): void {
+    revokeItems(allItems.value)
+    sources.value = []
+    allItems.value = []
+    currentId.value = null
+    activeSourceId.value = null
+    trash.value = []
+    duplicates.value = []
+    duplicatesScanned.value = false
+    activePanel.value = null
+    void clearAllHandles()
+    showOsd('已移除全部来源（磁盘文件未改动）', 'info')
+  }
+
+  /** 清空「记住的文件夹」，下次不再自动恢复 */
   async function forgetSession() {
-    await clearRootHandle()
-    rootName.value = ''
+    await clearAllHandles()
+    showOsd('已清除记住的文件夹', 'info')
   }
 
-  /** 删除当前视频：目录句柄模式真实移入回收站，降级模式仅移出列表 */
+  /** separate 模式下切换正在浏览的来源 */
+  function setActiveSource(id: string) {
+    if (!findSource(id)) return
+    activeSourceId.value = id
+    // 切换来源后当前视频若不在该来源里，落到该来源第一个
+    if (current.value === null || current.value.sourceId !== id) {
+      currentId.value = playlist.value.length ? playlist.value[0].id : null
+    }
+  }
+
+  function setPlaylistMode(mode: PlaylistMode) {
+    playlistMode.value = mode
+    // 切到 separate 后确保当前视频属于正在看的来源
+    if (mode === 'separate') {
+      const item = current.value
+      if (item) activeSourceId.value = item.sourceId
+      else if (!activeSourceId.value && sources.value.length) {
+        activeSourceId.value = sources.value[0].id
+      }
+    }
+    showFeedback(`播放列表：${PLAYLIST_MODE_LABELS[mode]}`, 'info')
+  }
+
+  /**
+   * 从 allItems 中摘掉若干条目，并把当前视频落到「原来所在的列表」的下一个。
+   * 注意 fallback 要在变更前算好，因为 playlist 是派生出来的。
+   */
+  function detachItems(removed: VideoItem[]): void {
+    if (!removed.length) return
+    const ids = new Set(removed.map((item) => item.id))
+    // 变更前先记下后续位置
+    const list = playlist.value
+    const anchor = currentId.value ? list.findIndex((item) => item.id === currentId.value) : -1
+    const remaining = list.filter((item) => !ids.has(item.id))
+    const fallback = remaining[Math.min(Math.max(anchor, 0), remaining.length - 1)]
+
+    revokeItems(removed)
+    allItems.value = allItems.value.filter((item) => !ids.has(item.id))
+    currentId.value = fallback ? fallback.id : null
+    touchPlaylist()
+  }
+
+  /** 删除当前视频：可读写来源真实删除，其他来源只移出列表 */
   async function removeCurrent(): Promise<void> {
     const item = current.value
     if (!item) return
 
-    if (mode.value !== 'handle' || !root.value || !item.handle) {
-      const index = currentIndex.value
-      const [removed] = playlist.value.splice(index, 1)
-      if (removed) URL.revokeObjectURL(removed.url)
-      const fallback = playlist.value[Math.min(index, playlist.value.length - 1)]
-      currentId.value = fallback ? fallback.id : null
+    const source = findSource(item.sourceId)
+    const canDelete = source?.mode === 'handle' && source.handle && item.handle
+    if (!canDelete) {
+      detachItems([item])
       showOsd('已从列表移除（浏览器限制，磁盘文件未删除）', 'delete')
       return
     }
+    const root = source!.handle as FileSystemDirectoryHandle
 
     if (deleteMode.value === 'trash') {
-      const granted = await ensureWritePermission(root.value)
+      const granted = await ensureWritePermission(root)
       if (!granted) {
         showOsd('未获得写入权限，无法移动文件', 'info')
         return
@@ -526,20 +793,29 @@ export const usePlayerStore = defineStore('player', () => {
     try {
       let trashPath: string[] = []
       if (deleteMode.value === 'trash') {
-        trashPath = await trashByHandle(root.value, item)
+        trashPath = await trashByHandle(root, item)
       } else {
-        await item.handle.remove()
+        await item.handle!.remove()
       }
 
-      const index = currentIndex.value
-      playlist.value.splice(index, 1)
-      URL.revokeObjectURL(item.url)
+      // 先算好落点，再真正移除条目
+      const list = playlist.value
+      const index = list.findIndex((entry) => entry.id === item.id)
+      const remaining = list.filter((entry) => entry.id !== item.id)
+      const fallback = remaining[Math.min(index, remaining.length - 1)]
 
-      const fallback = playlist.value[Math.min(index, playlist.value.length - 1)]
+      revokeItems([item])
+      allItems.value = allItems.value.filter((entry) => entry.id !== item.id)
       currentId.value = fallback ? fallback.id : null
+      touchPlaylist()
 
       if (deleteMode.value === 'trash') {
-        trash.value.push({ item, trashPath, parentPath: item.parentPath })
+        trash.value.push({
+          item,
+          trashPath,
+          parentPath: item.parentPath,
+          sourceId: item.sourceId
+        })
         showOsd(`已移入回收站：${item.name}（Ctrl+Z 撤销）`, 'delete')
       } else {
         showOsd(`已永久删除：${item.name}`, 'delete')
@@ -549,25 +825,32 @@ export const usePlayerStore = defineStore('player', () => {
     }
   }
 
-  /** 撤销上一次删除 */
+  /** 撤销上一次删除（还原回它原本所属的来源） */
   async function undoDelete(): Promise<void> {
     const record = trash.value.pop()
     if (!record) {
       showOsd('没有可撤销的删除', 'info')
       return
     }
-    if (!root.value) return
+    const source = findSource(record.sourceId)
+    if (!source?.handle) {
+      trash.value.push(record)
+      showOsd('原文件夹已移除，无法还原', 'info')
+      return
+    }
 
     try {
-      const handle = await restoreFromTrash(root.value, record)
+      const handle = await restoreFromTrash(source.handle, record)
       const restored: VideoItem = {
         ...record.item,
         handle,
         url: URL.createObjectURL(record.item.file)
       }
-      playlist.value.push(restored)
+      allItems.value = [...allItems.value, restored]
       // 还原后按当前排序规则归位，而不是塞到末尾
-      applySort()
+      touchPlaylist()
+      // separate 模式下还原的可能属于另一个文件夹：先切过去，否则当前视频会"悬空"成 null
+      if (playlistMode.value === 'separate') activeSourceId.value = restored.sourceId
       currentId.value = restored.id
       showOsd(`已还原：${restored.name}`, 'undo')
     } catch {
@@ -578,10 +861,14 @@ export const usePlayerStore = defineStore('player', () => {
 
   /* ---------------- 重复视频 ---------------- */
 
-  /** 需要做内容校验的文件数（体积不重复的文件不可能内容相同，先排除掉） */
+  /**
+   * 需要做内容校验的文件数。
+   * 注意用 allItems 而不是 playlist：重复检测应该覆盖所有来源，
+   * 否则 separate 模式下就只能发现"当前文件夹内部"的重复，跨文件夹的重复会被漏掉。
+   */
   const duplicateCandidateCount = computed(() => {
     const counter = new Map<number, number>()
-    for (const item of playlist.value) counter.set(item.size, (counter.get(item.size) ?? 0) + 1)
+    for (const item of allItems.value) counter.set(item.size, (counter.get(item.size) ?? 0) + 1)
     let count = 0
     for (const size of counter.values()) if (size > 1) count += size
     return count
@@ -606,7 +893,7 @@ export const usePlayerStore = defineStore('player', () => {
       showOsd('当前环境不支持内容校验（需要 https 或 localhost 打开）', 'info')
       return
     }
-    if (!playlist.value.length) {
+    if (!allItems.value.length) {
       showOsd('播放列表为空', 'info')
       return
     }
@@ -623,7 +910,7 @@ export const usePlayerStore = defineStore('player', () => {
 
     try {
       const groups = await findDuplicates(
-        playlist.value.map((item) => ({ value: item, file: item.file })),
+        allItems.value.map((item) => ({ value: item, file: item.file })),
         {
           signal: duplicateSignal,
           onProgress: (progress) => {
@@ -633,8 +920,12 @@ export const usePlayerStore = defineStore('player', () => {
       )
       duplicates.value = groups
       duplicatesScanned.value = true
+      const crossSource = groups.filter(
+        (group) => new Set(group.items.map((item) => item.sourceId)).size > 1
+      ).length
+      const suffix = crossSource ? `，其中 ${crossSource} 组跨文件夹` : ''
       showOsd(
-        groups.length ? `发现 ${groups.length} 组重复视频` : '没有发现重复视频',
+        groups.length ? `发现 ${groups.length} 组重复视频${suffix}` : '没有发现重复视频',
         'info'
       )
     } catch {
@@ -661,45 +952,47 @@ export const usePlayerStore = defineStore('player', () => {
   }
 
   /**
-   * 批量删除（重复视频清理用）。
-   * 目录句柄模式下按删除方式真实处理，兼容模式只把条目移出列表。
+   * 批量删除（重复视频清理用），按每个条目自己所属的来源分别处理。
+   * 可读写来源按当前删除方式真实处理；只读来源只把条目移出列表。
    * 返回真正处理成功的条目。
    */
   async function removeMany(items: VideoItem[]): Promise<VideoItem[]> {
     if (!items.length) return []
-    const index = currentIndex.value
 
-    const detach = (removed: VideoItem[]) => {
-      const ids = new Set(removed.map((item) => item.id))
-      revokeItems(removed)
-      playlist.value = playlist.value.filter((item) => !ids.has(item.id))
-      if (currentId.value && ids.has(currentId.value)) {
-        const fallback = playlist.value[Math.min(index, playlist.value.length - 1)]
-        currentId.value = fallback ? fallback.id : null
-      }
-    }
+    const detachable = items.filter((item) => {
+      const source = findSource(item.sourceId)
+      return !(source?.mode === 'handle' && source.handle && item.handle)
+    })
+    const deletable = items.filter((item) => !detachable.includes(item))
 
-    if (mode.value !== 'handle' || !root.value) {
-      detach(items)
-      showOsd(`已从列表移除 ${items.length} 个（浏览器限制，磁盘文件未删除）`, 'delete')
-      return items
-    }
-
-    if (deleteMode.value === 'trash') {
-      const granted = await ensureWritePermission(root.value)
-      if (!granted) {
-        showOsd('未获得写入权限，无法移动文件', 'info')
-        return []
-      }
-    }
+    // 只读来源：仅移出列表
+    if (detachable.length) detachItems(detachable)
 
     const succeeded: VideoItem[] = []
-    for (const item of items) {
-      if (!item.handle) continue
+    const granted = new Map<string, boolean>()
+
+    for (const item of deletable) {
+      const source = findSource(item.sourceId)
+      const root = source?.handle
+      if (!root || !item.handle) continue
+
+      if (deleteMode.value === 'trash') {
+        // 每个来源只申请一次写权限
+        if (!granted.has(source!.id)) {
+          granted.set(source!.id, await ensureWritePermission(root))
+        }
+        if (!granted.get(source!.id)) continue
+      }
+
       try {
         if (deleteMode.value === 'trash') {
-          const trashPath = await trashByHandle(root.value, item)
-          trash.value.push({ item, trashPath, parentPath: item.parentPath })
+          const trashPath = await trashByHandle(root, item)
+          trash.value.push({
+            item,
+            trashPath,
+            parentPath: item.parentPath,
+            sourceId: item.sourceId
+          })
         } else {
           await item.handle.remove()
         }
@@ -709,19 +1002,24 @@ export const usePlayerStore = defineStore('player', () => {
       }
     }
 
-    if (!succeeded.length) {
+    if (succeeded.length) detachItems(succeeded)
+
+    const verb = deleteMode.value === 'trash' ? '已移入回收站' : '已永久删除'
+    if (succeeded.length) {
+      const failed = deletable.length - succeeded.length
+      showOsd(
+        failed > 0
+          ? `${verb} ${succeeded.length} 个，${failed} 个失败`
+          : `${verb} ${succeeded.length} 个`,
+        'delete'
+      )
+    } else if (detachable.length) {
+      showOsd(`已从列表移除 ${detachable.length} 个（浏览器限制，磁盘文件未删除）`, 'delete')
+    } else {
       showOsd('删除失败，请确认目录写入权限', 'info')
-      return []
     }
 
-    detach(succeeded)
-    const verb = deleteMode.value === 'trash' ? '已移入回收站' : '已永久删除'
-    const failed = items.length - succeeded.length
-    showOsd(
-      failed > 0 ? `${verb} ${succeeded.length} 个，${failed} 个失败` : `${verb} ${succeeded.length} 个`,
-      'delete'
-    )
-    return succeeded
+    return [...detachable, ...succeeded]
   }
 
   /** 删除选中的重复文件，并把已删除项从分组里剔除 */
@@ -738,13 +1036,14 @@ export const usePlayerStore = defineStore('player', () => {
   }
 
   function reset() {
-    revokeItems(playlist.value)
-    playlist.value = []
+    revokeItems(allItems.value)
+    allItems.value = []
+    sources.value = []
     currentId.value = null
-    root.value = null
-    mode.value = 'fallback'
-    rootName.value = ''
+    activeSourceId.value = null
     trash.value = []
+    duplicates.value = []
+    duplicatesScanned.value = false
     activePanel.value = null
     void forgetSession()
   }
@@ -768,39 +1067,39 @@ export const usePlayerStore = defineStore('player', () => {
   /* ---------------- 画面转向（逐视频） ---------------- */
 
   /** 写入某个视频的转向记录；回到"原始方向"的条目会被删掉，避免记录无限膨胀 */
-  function applyTransform(id: string, next: VideoTransform) {
+  function applyTransform(contentKey: string, next: VideoTransform) {
     const map = { ...transforms.value }
-    if (next.rotate === 0 && !next.flip) delete map[id]
-    else map[id] = next
+    if (next.rotate === 0 && !next.flip) delete map[contentKey]
+    else map[contentKey] = next
     transforms.value = map
     saveTransforms(map)
   }
 
   /** 顺时针旋转 90° 循环：0 → 90 → 180 → 270 → 0 */
   function rotateVideo() {
-    const id = currentId.value
-    if (!id) return
-    const current = transforms.value[id] ?? IDENTITY_TRANSFORM
-    const next: VideoTransform = { ...current, rotate: nextRotation(current.rotate) }
-    applyTransform(id, next)
+    const item = current.value
+    if (!item) return
+    const cur = transforms.value[item.contentKey] ?? IDENTITY_TRANSFORM
+    const next: VideoTransform = { ...cur, rotate: nextRotation(cur.rotate) }
+    applyTransform(item.contentKey, next)
     showFeedback(`画面转向 ${next.rotate}°`, 'info')
   }
 
   /** 水平镜像（左右翻转） */
   function toggleFlip() {
-    const id = currentId.value
-    if (!id) return
-    const current = transforms.value[id] ?? IDENTITY_TRANSFORM
-    const next: VideoTransform = { ...current, flip: !current.flip }
-    applyTransform(id, next)
+    const item = current.value
+    if (!item) return
+    const cur = transforms.value[item.contentKey] ?? IDENTITY_TRANSFORM
+    const next: VideoTransform = { ...cur, flip: !cur.flip }
+    applyTransform(item.contentKey, next)
     showFeedback(`水平镜像：${next.flip ? '开' : '关'}`, 'info')
   }
 
   /** 把当前视频复位成原始方向 */
   function resetTransform() {
-    const id = currentId.value
-    if (!id) return
-    applyTransform(id, { ...IDENTITY_TRANSFORM })
+    const item = current.value
+    if (!item) return
+    applyTransform(item.contentKey, { ...IDENTITY_TRANSFORM })
     showFeedback('已复位画面转向', 'info')
   }
 
@@ -813,10 +1112,12 @@ export const usePlayerStore = defineStore('player', () => {
 
   return {
     // state
+    allItems,
+    sources,
     playlist,
     currentId,
-    rootName,
-    mode,
+    activeSourceId,
+    playlistMode,
     volume,
     muted,
     playbackRate,
@@ -846,6 +1147,10 @@ export const usePlayerStore = defineStore('player', () => {
     isEmpty,
     currentIndex,
     current,
+    sourceCount,
+    activeSource,
+    effectiveSourceId,
+    canRealDelete,
     canUndo,
     currentTransform,
     hasTransform,
@@ -877,6 +1182,10 @@ export const usePlayerStore = defineStore('player', () => {
     restoreLastSession,
     hasSavedSession,
     forgetSession,
+    removeSource,
+    removeAllSources,
+    setActiveSource,
+    setPlaylistMode,
     removeCurrent,
     undoDelete,
     reset,

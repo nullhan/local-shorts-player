@@ -244,8 +244,17 @@ onBeforeUnmount(() => {
         <span><kbd>{{ comboText(store.keymap.deleteCurrent) }}</kbd> 删除</span>
         <span><kbd>{{ comboText(store.keymap.toggleHelp) }}</kbd> 全部快捷键</span>
         <span class="spacer" />
-        <span class="mode-tag" :class="{ fallback: store.mode !== 'handle' }">
-          {{ store.mode === 'handle' ? '可读写目录' : '兼容模式：删除仅移出列表' }}
+        <button
+          v-if="store.sourceCount > 1"
+          class="mode-tag source-tag"
+          :title="store.playlistMode === 'merged' ? '当前合并显示所有文件夹，点击改为分开' : '当前按文件夹分开，点击改为合并'"
+          @click="store.setPlaylistMode(store.playlistMode === 'merged' ? 'separate' : 'merged')"
+        >
+          {{ store.sourceCount }} 个文件夹 ·
+          {{ store.playlistMode === 'merged' ? '合并' : (store.activeSource?.name || '分开') }}
+        </button>
+        <span class="mode-tag" :class="{ fallback: !store.canRealDelete }">
+          {{ store.canRealDelete ? '可读写目录' : '兼容模式：删除仅移出列表' }}
         </span>
       </div>
     </footer>
@@ -594,6 +603,18 @@ onBeforeUnmount(() => {
     &.fallback {
       background: rgba(255, 190, 90, 0.14);
       color: #ffc978;
+    }
+  }
+
+  .source-tag {
+    background: rgba(143, 196, 255, 0.16);
+    color: #8fc4ff;
+    cursor: pointer;
+    white-space: nowrap;
+    transition: background 0.16s var(--ease);
+
+    &:hover {
+      background: rgba(143, 196, 255, 0.3);
     }
   }
 }

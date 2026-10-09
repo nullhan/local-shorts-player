@@ -1,17 +1,47 @@
+/**
+ * 一个视频来源（一个文件夹）。
+ * 目录句柄模式下会持久化到 IndexedDB，恢复后 id 保持不变。
+ */
+export interface VideoSource {
+  /** 来源标识（会话内唯一，句柄模式下跨会话稳定） */
+  id: string
+  /** 文件夹名 */
+  name: string
+  /** 目录句柄；兼容模式（拖拽 / input 选择）下为 null */
+  handle: FileSystemDirectoryHandle | null
+  mode: SourceMode
+  /** 导入时间戳 */
+  addedAt: number
+}
+
+/** 多个来源如何组织成播放列表 */
+export type PlaylistMode = 'merged' | 'separate'
+
 /** 视频条目 */
 export interface VideoItem {
-  /** 稳定唯一 id：相对路径 + 体积 + 修改时间 */
+  /**
+   * 播放列表内唯一，已按来源作用域化。
+   * 用于 Vue key / currentId / 删除记录 —— 这些都必须区分"哪个文件夹里的那个文件"。
+   */
   id: string
+  /**
+   * 跨会话稳定的内容标识：相对路径 + 体积 + 修改时间。
+   * 与来源无关，因此同一个文件夹被重新导入后仍然一致。
+   * 画面转向等「跟着文件走」的记录用它做 key。
+   */
+  contentKey: string
+  /** 所属来源 id，删除 / 还原时用于定位正确的目录句柄 */
+  sourceId: string
   /** 文件名 */
   name: string
   /** blob: 播放地址 */
   url: string
   /** 源文件（导入时的快照） */
   file: File
-  /** 目录句柄，用于真实删除；降级导入时为 null */
+  /** 文件句柄，用于真实删除；降级导入时为 null */
   handle: FileSystemFileHandle | null
   size: number
-  /** 相对根目录的路径，例如 子目录/a.mp4 */
+  /** 相对所属来源根目录的路径，例如 子目录/a.mp4 */
   relativePath: string
   /** 所在父目录的相对路径，例如 子目录 */
   parentPath: string
@@ -85,6 +115,8 @@ export interface PlayerPrefs {
   sortDir: SortDir
   /** 自定义按键绑定 */
   keybindings: Keymap
+  /** 多个来源合并成同一列表，还是按来源分开 */
+  playlistMode: PlaylistMode
 }
 
 /** 屏上提示（音量 / 进度 / 删除反馈） */
@@ -114,6 +146,8 @@ export interface TrashRecord {
   trashPath: string[]
   /** 原父目录相对路径 */
   parentPath: string
+  /** 所属来源 id —— 还原时必须回到同一个文件夹，不能落到别的来源 */
+  sourceId: string
 }
 
 export interface ScanProgress {

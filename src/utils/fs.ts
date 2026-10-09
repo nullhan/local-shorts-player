@@ -1,26 +1,48 @@
-import type { ScanProgress, VideoItem } from '@/types'
+import type { ScanProgress, SourceMode, VideoItem } from '@/types'
 import { hashString, isVideoFile, naturalCompare } from './media'
 
 export const TRASH_DIR = '.shorts-trash'
 
 export interface ScanResult {
   items: VideoItem[]
-  /** 目录句柄模式下的根句柄，用于后续删除 */
-  root: FileSystemDirectoryHandle | null
-  mode: 'handle' | 'fallback'
+  mode: SourceMode
   skipped: number
+}
+
+/** 扫描时已经确定的来源信息（句柄 / 来源 id / 名称） */
+export interface ScanSource {
+  id: string
+  name: string
+  handle: FileSystemDirectoryHandle | null
+}
+
+/**
+ * 生成「跨会话稳定」的内容标识：相对路径 + 体积 + 修改时间。
+ * 不含来源，所以同一个文件夹重新导入后不变 —— 画面转向记录靠它关联。
+ */
+export function buildContentKey(
+  relativePath: string,
+  size: number,
+  mtime: number
+): string {
+  return hashString(`${relativePath}|${size}|${mtime}`)
 }
 
 function buildItem(
   file: File,
   relativePath: string,
-  handle: FileSystemFileHandle | null
+  handle: FileSystemFileHandle | null,
+  source: ScanSource
 ): VideoItem {
   const segments = relativePath.split('/')
   const parentPath = segments.slice(0, -1).join('/')
-  const id = hashString(`${relativePath}|${file.size}|${file.lastModified}`)
+  const mtime = file.lastModified || 0
+  const contentKey = buildContentKey(relativePath, file.size, mtime)
   return {
-    id,
+    // 列表内唯一必须带上来源，否则两个文件夹里的同名同体积文件会撞 id
+    id: `${source.id}:${contentKey}`,
+    contentKey,
+    sourceId: source.id,
     name: segments[segments.length - 1],
     url: URL.createObjectURL(file),
     file,
@@ -28,7 +50,7 @@ function buildItem(
     size: file.size,
     relativePath,
     parentPath,
-    mtime: file.lastModified || 0
+    mtime
   }
 }
 
@@ -45,7 +67,8 @@ async function walkDirectory(
   prefix: string,
   onProgress: (progress: ScanProgress) => void,
   state: ScanProgress,
-  items: VideoItem[]
+  items: VideoItem[],
+  source: ScanSource
 ): Promise<number> {
   let skipped = 0
   for await (const [name, entry] of dir.entries()) {
@@ -61,7 +84,8 @@ async function walkDirectory(
         relativePath,
         onProgress,
         state,
-        items
+        items,
+        source
       )
       continue
     }
@@ -73,7 +97,7 @@ async function walkDirectory(
 
     try {
       const file = await (entry as FileSystemFileHandle).getFile()
-      items.push(buildItem(file, relativePath, entry as FileSystemFileHandle))
+      items.push(buildItem(file, relativePath, entry as FileSystemFileHandle, source))
       state.found = items.length
       onProgress({ ...state })
     } catch {
@@ -86,19 +110,20 @@ async function walkDirectory(
 /** 通过 showDirectoryPicker 的目录句柄扫描（推荐，支持自动递归 + 真实删除） */
 export async function scanByHandle(
   root: FileSystemDirectoryHandle,
+  source: ScanSource,
   onProgress: (progress: ScanProgress) => void
 ): Promise<ScanResult> {
   const state: ScanProgress = { found: 0, dirs: 0, scanning: true }
   const items: VideoItem[] = []
   onProgress({ ...state })
 
-  const skipped = await walkDirectory(root, '', onProgress, state, items)
+  const skipped = await walkDirectory(root, '', onProgress, state, items, source)
 
   state.scanning = false
   onProgress({ ...state })
   items.sort((a, b) => naturalCompare(a.relativePath, b.relativePath))
 
-  return { items, root, mode: 'handle', skipped }
+  return { items, mode: 'handle', skipped }
 }
 
 /**
@@ -107,6 +132,7 @@ export async function scanByHandle(
  */
 export async function scanByFileList(
   fileList: FileList | File[],
+  source: ScanSource,
   onProgress: (progress: ScanProgress) => void
 ): Promise<ScanResult> {
   const files = Array.from(fileList)
@@ -126,7 +152,7 @@ export async function scanByFileList(
       skipped += 1
       continue
     }
-    items.push(buildItem(file, relativePath, null))
+    items.push(buildItem(file, relativePath, null, source))
     state.found = items.length
   }
 
@@ -134,7 +160,7 @@ export async function scanByFileList(
   onProgress({ ...state })
   items.sort((a, b) => naturalCompare(a.relativePath, b.relativePath))
 
-  return { items, root: null, mode: 'fallback', skipped }
+  return { items, mode: 'fallback', skipped }
 }
 
 /** 释放已生成的 blob url */
