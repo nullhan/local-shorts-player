@@ -5,6 +5,7 @@ import { useRouter } from 'vue-router'
 import OsdToast from '@/components/player/OsdToast.vue'
 import DuplicatePanel from '@/components/player/DuplicatePanel.vue'
 import FolderHelperPanel from '@/components/player/FolderHelperPanel.vue'
+import MusicStage from '@/components/player/MusicStage.vue'
 import PlaylistPanel from '@/components/player/PlaylistPanel.vue'
 import PlayPulse from '@/components/player/PlayPulse.vue'
 import ProgressBar from '@/components/player/ProgressBar.vue'
@@ -13,7 +14,8 @@ import VideoStage from '@/components/player/VideoStage.vue'
 import VolumeControl from '@/components/player/VolumeControl.vue'
 import SvgIcon from '@/components/SvgIcon.vue'
 import { useIdle } from '@/composables/useIdle'
-import { useKeyboardShortcuts, useWheelNavigate } from '@/composables/useShortcuts'
+import { useMediaSession } from '@/composables/useMediaSession'
+import { useKeyboardShortcuts, useTouchGestures, useWheelNavigate } from '@/composables/useShortcuts'
 import { seekTo, togglePlay, videoPaused } from '@/composables/useVideoControl'
 import { usePlayerStore } from '@/store/player'
 import { ACTIONS, comboText, formatCombo } from '@/utils/keymap'
@@ -26,9 +28,14 @@ const stage = ref<HTMLElement | null>(null)
 const { idle } = useIdle()
 
 useWheelNavigate(stage)
+useTouchGestures(stage)
 useKeyboardShortcuts({ container: stage })
+/** 锁屏 / 通知栏控制 + 播放时防息屏（移动端） */
+useMediaSession()
 
 const current = computed(() => store.current)
+/** 音频走音乐界面，其余走全屏视频界面 */
+const musicMode = computed(() => store.isMusicMode)
 const sliderOpen = ref(false)
 const seekSliderValue = ref(0)
 
@@ -99,13 +106,20 @@ onBeforeUnmount(() => {
     class="player-view"
     :class="{ idle, controlsHidden: idle || Boolean(store.activePanel) }"
   >
-    <!-- 上下切换：新旧画面同时滑动（参考抖音），不做淡入淡出，避免中间露出黑底 -->
-    <Transition :name="transitionName">
+    <!--
+      切换动画：音频/视频之间用淡入淡出（两个界面对不上位，滑动会很怪），
+      同类型之间沿用抖音式的竖向滑动。
+    -->
+    <Transition :name="musicMode ? 'fade' : transitionName">
       <VideoStage
         :key="current?.id || 'empty'"
         :item="current"
         :transform="store.currentTransform"
-      />
+        :audio-only="musicMode"
+      >
+        <!-- 音频模式下的可视化界面（封面 / 标题），由 MusicStage 提供 -->
+        <MusicStage :item="current" :source-name="store.activeSource?.name" />
+      </VideoStage>
     </Transition>
 
     <!-- 顶部信息 -->
@@ -356,6 +370,14 @@ onBeforeUnmount(() => {
  *
  * 所以改成：控件自己带背景，纯文字用 text-shadow 保证在亮画面上也读得清。
  */
+/*
+ * 隐藏态：只用位移变量做微调，**不要直接覆盖 transform**。
+ *
+ * 曾经的写法是 `.controlsHidden .rail { transform: translateX(-12px) }`，
+ * 它是 (0,2,0) 特异性，会盖掉 .rail 自己的居中变换 (0,1,0)：
+ * 桌面丢掉 translateY(-50%) 使轨道纵向跳位，移动端丢掉 translateX(-50%) 直接偏出屏幕。
+ * 改成让基础 transform 去读变量，隐藏态只改变量，两种布局都不再互相打架。
+ */
 .controlsHidden {
   .top-bar {
     opacity: 0;
@@ -370,8 +392,8 @@ onBeforeUnmount(() => {
   }
 
   .rail {
+    --rail-shift-y: -12px;
     opacity: 0;
-    transform: translateX(-12px);
     pointer-events: none;
   }
 }
@@ -448,7 +470,11 @@ onBeforeUnmount(() => {
   flex-direction: column;
   align-items: center;
   gap: 10px;
-  transform: translateY(-50%);
+  /* 居中由变量拼出来，这样隐藏态只需改变量、不会覆盖掉居中 */
+  transform: translate(
+      var(--rail-center-x, 0px),
+      calc(-50% + var(--rail-shift-y, 0px))
+    );
   z-index: 14;
 }
 
@@ -812,5 +838,101 @@ onBeforeUnmount(() => {
 .slide-panel-leave-to {
   transform: translateX(24px);
   opacity: 0;
+}
+
+/* ------------------------------------------------------------------
+ * 移动端适配
+ *
+ * 触摸设备没有 hover、也没有键盘，所以：
+ * - 加大点击区域到 44px（Apple HIG / Material 的最小可点尺寸）
+ * - 控件不再依赖 hover 才显示，但保留"静止自动隐藏"以让出画面
+ * - 进度条加粗，手指更容易拖到
+ * - 左侧轨道改成底部横向排列，拇指才够得到
+ * ------------------------------------------------------------------ */
+@media (hover: none), (max-width: 820px) {
+  .top-bar {
+    padding: calc(10px + var(--safe-top)) calc(12px + var(--safe-right)) 16px
+      calc(12px + var(--safe-left));
+  }
+
+  .icon-btn {
+    width: var(--tap-min);
+    height: var(--tap-min);
+  }
+
+  .bottom-bar {
+    padding: 20px calc(14px + var(--safe-right)) calc(12px + var(--safe-bottom))
+      calc(14px + var(--safe-left));
+  }
+
+  .play-btn {
+    width: var(--tap-min);
+    height: var(--tap-min);
+  }
+
+  /* 进度条：给个更容易命中的高度 */
+  .playline {
+    gap: 12px;
+  }
+
+  /*
+   * 左侧竖排轨道在窄屏上会压到画面，改成横排贴在进度条上方，
+   * 拇指自然活动范围内。居中同样走变量，隐藏态只改变量。
+   */
+  .rail {
+    --rail-center-x: -50%;
+    left: 50%;
+    top: auto;
+    bottom: calc(96px + var(--safe-bottom));
+    flex-direction: row;
+    gap: 8px;
+  }
+
+  .rail-btn,
+  .rail-item {
+    width: var(--tap-min);
+    height: var(--tap-min);
+  }
+
+  .rail-item {
+    width: var(--tap-min);
+    height: var(--tap-min);
+  }
+
+  /* 底部横排时隐藏态往上收，而不是往左移出 */
+  .controlsHidden .rail {
+    --rail-shift-y: 12px;
+    --rail-center-x: -50%;
+  }
+
+  .seek-slider {
+    left: 50%;
+    top: auto;
+    bottom: calc(152px + var(--safe-bottom));
+    transform: translateX(-50%);
+  }
+
+  /* 键盘提示在手机上没意义，让位给模式标签 */
+  .hint-line {
+    gap: 10px;
+    font-size: 10px;
+
+    > span:not(.spacer) {
+      display: none;
+    }
+
+    kbd {
+      display: none;
+    }
+  }
+
+  .help-mask {
+    padding: var(--safe-top) var(--safe-right) var(--safe-bottom) var(--safe-left);
+  }
+
+  .help-card {
+    width: min(92vw, 620px);
+    max-height: 82vh;
+  }
 }
 </style>

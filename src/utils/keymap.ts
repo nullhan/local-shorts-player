@@ -31,6 +31,12 @@ export const ACTIONS: ActionMeta[] = [
   { id: 'deleteCurrent', label: '删除当前视频', group: '播放' },
   { id: 'undoDelete', label: '撤销删除', group: '播放' },
   { id: 'cycleFit', label: '切换画面适配', group: '画面' },
+  {
+    id: 'cycleView',
+    label: '切换界面呈现（自动 / 视频 / 音乐）',
+    group: '画面',
+    tip: '用于把 .webm、.ogg 这类歧义容器手动指定成音乐'
+  },
   { id: 'rotateVideo', label: '画面转向（顺时针 90°）', group: '画面', tip: '只影响当前这一个视频' },
   { id: 'flipVideo', label: '水平镜像（左右翻转）', group: '画面' },
   { id: 'togglePlaylist', label: '播放列表', group: '界面' },
@@ -70,6 +76,7 @@ export const DEFAULT_KEYMAP: Keymap = {
   toggleSettings: 'S',
   toggleHelp: 'H',
   cycleFit: 'A',
+  cycleView: 'V',
   rotateVideo: 'R',
   flipVideo: 'Shift+R',
   toggleFullscreen: 'F',

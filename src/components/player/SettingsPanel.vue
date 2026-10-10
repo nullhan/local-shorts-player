@@ -3,7 +3,7 @@ import { computed, onBeforeUnmount, ref, watch } from 'vue'
 
 import SvgIcon from '@/components/SvgIcon.vue'
 import { videoNativeHeight, videoNativeWidth } from '@/composables/useVideoControl'
-import type { FitMode } from '@/store/player'
+import type { FitMode, ViewMode } from '@/store/player'
 import { usePlayerStore } from '@/store/player'
 import type { ActionId, SortKey } from '@/types'
 import { ACTIONS, comboFromEvent, comboText, isModifierKey } from '@/utils/keymap'
@@ -28,6 +28,18 @@ const fitModes: Array<{ value: FitMode; label: string }> = [
   { value: 'cover', label: '填满裁切' },
   { value: 'fill', label: '拉伸铺满' }
 ]
+
+const viewModes: Array<{ value: ViewMode; label: string }> = [
+  { value: 'auto', label: '自动识别' },
+  { value: 'video', label: '始终视频' },
+  { value: 'music', label: '始终音乐' }
+]
+
+/* ---------------- 移动端能力探测（用于禁用开关并说明原因） ---------------- */
+
+const mediaSupported = typeof navigator !== 'undefined' && 'mediaSession' in navigator
+const wakeSupported = typeof navigator !== 'undefined' && 'wakeLock' in navigator
+const isSecureContext = typeof window !== 'undefined' && window.isSecureContext
 
 const sortOptions: Array<{ value: SortKey; label: string }> = [
   { value: 'default', label: '路径' },
@@ -300,6 +312,27 @@ function clearBinding(id: ActionId) {
       <section class="group">
         <div class="group-title">播放</div>
 
+        <div class="row column">
+          <span>界面呈现</span>
+          <div class="chips">
+            <button
+              v-for="mode in viewModes"
+              :key="mode.value"
+              class="chip"
+              :class="{ on: store.viewMode === mode.value }"
+              @click="store.viewMode = mode.value"
+            >
+              {{ mode.label }}
+            </button>
+          </div>
+        </div>
+
+        <p class="note">
+          默认「自动识别」—— 遇到音频文件自动切到音乐界面（封面 + 标题），视频仍然全屏播放。
+          如果某个 <code>.webm</code> / <code>.ogg</code> 其实是纯音频，用「始终音乐」手动纠正即可。
+          当前列表：{{ store.videoCount }} 个视频 / {{ store.audioCount }} 个音频。
+        </p>
+
         <label class="row">
           <span>切换后自动播放</span>
           <input v-model="store.autoPlay" type="checkbox" class="switch" />
@@ -544,6 +577,56 @@ function clearBinding(id: ActionId) {
           <SvgIcon name="trash" :size="15" />
           移除全部来源
         </button>
+      </section>
+
+      <section class="group">
+        <div class="group-title">移动端</div>
+
+        <label class="row" :class="{ disabled: !mediaSupported }">
+          <span>
+            锁屏 / 通知栏控制
+            <em>显示曲目信息，耳机与车机按键可用</em>
+          </span>
+          <input
+            v-model="store.mediaSession"
+            type="checkbox"
+            class="switch"
+            :disabled="!mediaSupported"
+          />
+        </label>
+
+        <label class="row" :class="{ disabled: !wakeSupported }">
+          <span>
+            播放时阻止息屏
+            <em>仅音乐模式生效，视频不受影响</em>
+          </span>
+          <input
+            v-model="store.keepAwake"
+            type="checkbox"
+            class="switch"
+            :disabled="!wakeSupported"
+          />
+        </label>
+
+        <p class="note">
+          <strong>锁屏控制</strong>把当前曲目交给系统，Android / iOS 的锁屏、
+          通知栏、耳机线控、车载蓝牙就都能控制播放与上下曲，不需要装 App。
+          <br />
+          <strong>阻止息屏</strong>用 Screen Wake Lock 保持常亮 —— 听音乐时屏幕自己灭掉会打断操作；
+          视频场景不需要，因为用户本来就在看。
+        </p>
+
+        <p v-if="!mediaSupported || !wakeSupported" class="note warn">
+          当前浏览器不支持：
+          <template v-if="!mediaSupported"><code>Media Session</code> </template>
+          <template v-if="!wakeSupported"><code>Wake Lock</code></template>
+          。需要 Chrome(Android) / Safari(iOS 15+) 等现代浏览器。
+        </p>
+
+        <p v-if="!isSecureContext" class="note warn">
+          当前不是安全上下文（需要 <code>https</code> 或 <code>localhost</code>），
+          锁屏控制与防息屏都不会生效。
+        </p>
       </section>
 
       <section class="group">
@@ -1059,6 +1142,67 @@ function clearBinding(id: ActionId) {
 
   .wide {
     margin-top: 8px;
+  }
+}
+
+/* 手机上设置面板占满整屏，控件加大 */
+@media (hover: none), (max-width: 820px) {
+  .settings-panel {
+    top: var(--safe-top);
+    right: 0;
+    bottom: 0;
+    left: 0;
+    width: auto;
+    border: none;
+    border-radius: 0;
+  }
+
+  .head {
+    padding: 12px 16px 8px;
+  }
+
+  .body {
+    padding: 4px 16px calc(24px + var(--safe-bottom));
+  }
+
+  .switch {
+    width: 46px;
+    height: 26px;
+
+    &::after {
+      width: 20px;
+      height: 20px;
+      top: 3px;
+    }
+
+    &:checked::after {
+      transform: translateX(19px);
+    }
+  }
+
+  .chip {
+    height: 34px;
+    padding: 0 14px;
+    font-size: 13px;
+  }
+
+  .wide {
+    height: 42px;
+  }
+
+  .key-btn {
+    height: 36px;
+    min-width: 88px;
+  }
+
+  .key-clear {
+    width: 32px;
+    height: 32px;
+  }
+
+  .custom-input input {
+    height: 36px;
+    font-size: 15px;
   }
 }
 </style>

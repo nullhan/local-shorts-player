@@ -5,6 +5,7 @@ import { useRouter } from 'vue-router'
 import OsdToast from '@/components/player/OsdToast.vue'
 import SvgIcon from '@/components/SvgIcon.vue'
 import { usePlayerStore } from '@/store/player'
+import { MEDIA_ACCEPT } from '@/utils/media'
 
 const router = useRouter()
 const store = usePlayerStore()
@@ -16,6 +17,15 @@ const savedCount = ref(0)
 const restoring = ref(false)
 
 const supportsPicker = typeof window !== 'undefined' && Boolean(window.showDirectoryPicker)
+
+/**
+ * 手机浏览器的现实：showDirectoryPicker 只有桌面 Chromium 实现，
+ * iOS Safari / Android Chrome / Firefox 都没有。所以移动端必然走兼容模式，
+ * 界面上必须说清楚，否则用户会以为是 bug。
+ */
+const isTouchDevice =
+  typeof window !== 'undefined' &&
+  (window.matchMedia?.('(hover: none)').matches || 'ontouchstart' in window)
 
 onMounted(async () => {
   hasSession.value = await store.hasSavedSession()
@@ -107,21 +117,31 @@ function countOf(sourceId: string): number {
       <div class="logo">
         <SvgIcon name="play" :size="26" />
       </div>
-      <h1>本地短视频播放器</h1>
+      <h1>本地音视频播放器</h1>
       <p class="subtitle">
-        <kbd>↑</kbd><kbd>↓</kbd> 切换视频 · 滚轮切换 · <kbd>Delete</kbd> 快速删除 · 按键全部可自定义
+        <kbd>↑</kbd><kbd>↓</kbd> / 上下滑切换 · 滚轮切换 · <kbd>Delete</kbd> 快速删除 · 按键全部可自定义
       </p>
 
       <div class="actions">
-        <button v-if="supportsPicker" class="btn primary" :disabled="store.loading" @click="handlePick">
+        <button
+          v-if="supportsPicker"
+          class="btn primary"
+          :disabled="store.loading"
+          @click="handlePick"
+        >
           <SvgIcon name="folder" :size="18" />
           <span>
-            {{ store.loading ? '正在扫描…' : store.sourceCount ? '继续添加文件夹' : '选择视频文件夹' }}
+            {{ store.loading ? '正在扫描…' : store.sourceCount ? '继续添加文件夹' : '选择媒体文件夹' }}
           </span>
         </button>
-        <button class="btn" :disabled="store.loading" @click="openFileDialog">
+        <button
+          class="btn"
+          :class="{ primary: !supportsPicker }"
+          :disabled="store.loading"
+          @click="openFileDialog"
+        >
           <SvgIcon name="import" :size="18" />
-          <span>选择文件夹（兼容模式）</span>
+          <span>{{ supportsPicker ? '选择文件夹（兼容模式）' : '选择音视频文件 / 文件夹' }}</span>
         </button>
         <button v-if="hasSession" class="btn ghost" :disabled="restoring" @click="handleRestore">
           <SvgIcon name="undo" :size="18" />
@@ -130,11 +150,20 @@ function countOf(sourceId: string): number {
       </div>
 
       <p class="hint">
-        {{ supportsPicker
-          ? '可以多次点击添加不同路径的文件夹，所有视频会自动汇总'
-          : '当前浏览器不支持目录选择器，建议使用 Chrome / Edge 获得完整删除能力' }}
+        <template v-if="supportsPicker">
+          可以多次点击添加不同路径的文件夹，视频与音乐会自动汇总
+        </template>
+        <template v-else-if="isTouchDevice">
+          手机浏览器不支持目录读写权限，只能选文件：<strong>删除只会移出列表</strong>，无法删除原文件
+        </template>
+        <template v-else>
+          当前浏览器不支持目录选择器，建议使用 Chrome / Edge 获得完整删除能力
+        </template>
       </p>
-      <p class="hint">也可以直接把文件夹拖拽到本页面（支持一次拖入多个）</p>
+      <p class="hint">
+        支持视频（mp4 / mkv / mov…）与音频（mp3 / flac / m4a…）
+        <template v-if="!isTouchDevice">，也可以直接把文件夹拖进来（支持一次拖入多个）</template>
+      </p>
 
       <!-- 已导入的来源列表：允许逐个移除，或直接开始播放 -->
       <div v-if="store.sourceCount" class="sources">
@@ -207,13 +236,28 @@ function countOf(sourceId: string): number {
       </div>
     </div>
 
+    <!--
+      桌面：webkitdirectory 能整目录递归导入，保留。
+      移动端：webkitdirectory 不被支持（会被忽略），单独给一个纯文件选择器，
+      让手机用户至少能多选文件。
+    -->
     <input
+      v-if="!isTouchDevice"
       ref="fileInput"
       class="hidden-input"
       type="file"
       webkitdirectory
       multiple
-      accept="video/*"
+      :accept="MEDIA_ACCEPT"
+      @change="handleFileChange"
+    />
+    <input
+      v-else
+      ref="fileInput"
+      class="hidden-input"
+      type="file"
+      multiple
+      :accept="MEDIA_ACCEPT"
       @change="handleFileChange"
     />
 
@@ -517,6 +561,85 @@ function countOf(sourceId: string): number {
 
   .hero h1 {
     font-size: 30px;
+  }
+}
+
+/*
+ * 移动端导入页。
+ *
+ * 关键现实：**手机上无法用 showDirectoryPicker**（Chromium 只在桌面实现，
+ * Safari / Firefox 没有），所以主按钮会落到「选择文件夹（兼容模式）」这条 path 上。
+ * 这里把它提到最前，并明确告知限制，避免用户以为功能坏了。
+ */
+@media (hover: none), (max-width: 820px) {
+  .import-view {
+    display: flex;
+    flex-direction: column;
+    gap: 22px;
+    padding: calc(24px + var(--safe-top)) calc(18px + var(--safe-right))
+      calc(28px + var(--safe-bottom)) calc(18px + var(--safe-left));
+    align-items: stretch;
+  }
+
+  .hero {
+    gap: 14px;
+
+    h1 {
+      font-size: 27px;
+    }
+
+    .subtitle {
+      font-size: 13.5px;
+    }
+
+    .logo {
+      width: 50px;
+      height: 50px;
+      border-radius: 15px;
+    }
+  }
+
+  /* 按钮竖排 + 满宽，拇指好按 */
+  .actions {
+    flex-direction: column;
+    gap: 10px;
+  }
+
+  .btn {
+    width: 100%;
+    height: var(--tap-min);
+    justify-content: center;
+  }
+
+  .shortcuts {
+    padding: 18px;
+
+    ul {
+      grid-template-columns: 1fr;
+      gap: 8px;
+    }
+  }
+
+  /* 手机上快捷键意义有限（没键盘），折叠成一行说明 */
+  .shortcuts ul {
+    display: none;
+  }
+
+  .shortcuts-note {
+    margin-top: 0;
+  }
+
+  .sources {
+    padding: 12px;
+  }
+
+  .source-row {
+    padding: 10px;
+  }
+
+  .row-remove {
+    width: var(--tap-min);
+    height: var(--tap-min);
   }
 }
 </style>

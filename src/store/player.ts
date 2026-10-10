@@ -16,10 +16,12 @@ import type {
   ScanProgress,
   SortDir,
   SortKey,
+  SourceKind,
   SourceMode,
   TrashRecord,
   VideoItem,
-  VideoSource
+  VideoSource,
+  ViewMode
 } from '@/types'
 import { ACTION_LABELS, DEFAULT_KEYMAP } from '@/utils/keymap'
 import { clamp, hashString, naturalCompare } from '@/utils/media'
@@ -73,7 +75,18 @@ const SORT_DEFAULT_DIR: Record<SortKey, SortDir> = {
   mtime: 'desc'
 }
 
-export type { DeleteMode, FitMode, LoopMode, PanelType, PlaylistMode, SourceMode, SortKey, SortDir }
+export type {
+  DeleteMode,
+  FitMode,
+  LoopMode,
+  PanelType,
+  PlaylistMode,
+  SourceKind,
+  SourceMode,
+  SortKey,
+  SortDir,
+  ViewMode
+}
 
 export const PLAYLIST_MODE_LABELS: Record<PlaylistMode, string> = {
   merged: '合并为一个列表',
@@ -91,6 +104,12 @@ export const SORT_LABELS: Record<SortKey, string> = {
   name: '名称',
   size: '大小',
   mtime: '修改时间'
+}
+
+export const VIEW_MODE_LABELS: Record<ViewMode, string> = {
+  auto: '自动识别',
+  video: '始终视频',
+  music: '始终音乐'
 }
 
 export const usePlayerStore = defineStore('player', () => {
@@ -125,6 +144,12 @@ export const usePlayerStore = defineStore('player', () => {
   const keymap = ref<Keymap>({ ...initial.keybindings })
   /** 多个来源合并成一个列表，还是按来源分开播放 */
   const playlistMode = ref<PlaylistMode>(initial.playlistMode)
+  /** 界面呈现：auto 认音频进音乐模式 / 强制视频 / 强制音乐 */
+  const viewMode = ref<ViewMode>(initial.viewMode)
+  /** 移动端：锁屏与通知栏显示媒体信息 */
+  const mediaSession = ref(initial.mediaSession)
+  /** 播放时阻止屏幕自动休眠 */
+  const keepAwake = ref(initial.keepAwake)
   /** 强制重排用的版本号：排序规则本身没变但需要重新计算时用 */
   const sortVersion = ref(0)
   /** 设置面板正在录制按键时为 true，全局快捷键暂时让位 */
@@ -221,6 +246,28 @@ export const usePlayerStore = defineStore('player', () => {
   )
   const sourceCount = computed(() => sources.value.length)
 
+  /** 当前列表里有多少音频 / 视频 —— 决定默认走哪套界面 */
+  const audioCount = computed(
+    () => playlist.value.filter((item) => item.kind === 'audio').length
+  )
+  const videoCount = computed(() => playlist.value.length - audioCount.value)
+
+  /**
+   * 是否进入音乐模式（用封面 + 大标题的音频界面，而不是全屏视频）。
+   * auto：按「当前条目是不是音频」判断；
+   * 强制选项用于用户在 .ogg / .webm 这类歧义容器上手动纠正。
+   */
+  const isMusicMode = computed(() => {
+    if (viewMode.value === 'music') return true
+    if (viewMode.value === 'video') return false
+    return current.value?.kind === 'audio'
+  })
+
+  /** 纯音频列表且没有视频时，导入后可以直接进音乐模式 */
+  const isPureAudioPlaylist = computed(
+    () => playlist.value.length > 0 && audioCount.value === playlist.value.length
+  )
+
   /** 当前来源（separate 模式或界面展示用） */
   const activeSource = computed<VideoSource | null>(
     () => sources.value.find((source) => source.id === effectiveSourceId.value) ?? null
@@ -275,7 +322,10 @@ export const usePlayerStore = defineStore('player', () => {
       sortKey: sortKey.value,
       sortDir: sortDir.value,
       keybindings: { ...keymap.value },
-      playlistMode: playlistMode.value
+      playlistMode: playlistMode.value,
+      viewMode: viewMode.value,
+      mediaSession: mediaSession.value,
+      keepAwake: keepAwake.value
     }
   }
 
@@ -295,7 +345,10 @@ export const usePlayerStore = defineStore('player', () => {
       sortKey,
       sortDir,
       keymap,
-      playlistMode
+      playlistMode,
+      viewMode,
+      mediaSession,
+      keepAwake
     ],
     () => {
       if (prefsTimer) window.clearTimeout(prefsTimer)
@@ -329,6 +382,9 @@ export const usePlayerStore = defineStore('player', () => {
     sortKey.value = next.sortKey
     sortDir.value = next.sortDir
     keymap.value = { ...DEFAULT_KEYMAP }
+    viewMode.value = next.viewMode
+    mediaSession.value = next.mediaSession
+    keepAwake.value = next.keepAwake
     applySort()
     clearPrefs()
     showOsd('已恢复默认设置', 'info')
@@ -1094,6 +1150,14 @@ export const usePlayerStore = defineStore('player', () => {
     showFeedback(`画面：${FIT_MODE_LABELS[next]}`, 'info')
   }
 
+  /** 循环切换界面呈现方式（自动 → 视频 → 音乐 → 自动） */
+  function cycleViewMode() {
+    const order: ViewMode[] = ['auto', 'video', 'music']
+    const next = order[(order.indexOf(viewMode.value) + 1) % order.length]
+    viewMode.value = next
+    showFeedback(`界面：${VIEW_MODE_LABELS[next]}`, 'info')
+  }
+
   function closePanel() {
     activePanel.value = null
     contextItem.value = null
@@ -1295,6 +1359,9 @@ export const usePlayerStore = defineStore('player', () => {
     contextItem,
     folderFilter,
     folderRoots,
+    viewMode,
+    mediaSession,
+    keepAwake,
     // getters
     playlistCount,
     playlistTotal,
@@ -1310,6 +1377,10 @@ export const usePlayerStore = defineStore('player', () => {
     currentTransform,
     hasTransform,
     transformLabel,
+    audioCount,
+    videoCount,
+    isMusicMode,
+    isPureAudioPlaylist,
     duplicateCandidateCount,
     duplicateStats,
     duplicateSupported,
@@ -1354,6 +1425,7 @@ export const usePlayerStore = defineStore('player', () => {
     setFolderRoot,
     removeFolderRoot,
     cycleFitMode,
+    cycleViewMode,
     rotateVideo,
     toggleFlip,
     resetTransform,

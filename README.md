@@ -1,8 +1,9 @@
-# 本地短视频播放器（local-shorts-player）
+# 本地音视频播放器（local-shorts-player）
 
-一个抖音风格的**本地视频**播放器：竖向全屏播放、上下滑动式切换、键盘控制进度与音量、<kbd>Delete</kbd> 快速删除当前视频。
+一个抖音风格的**本地音视频**播放器：竖向全屏播放、上下滑动式切换、键盘 / 触摸手势控制、
+支持音乐播放与移动端（锁屏控制、后台播放、防息屏）、<kbd>Delete</kbd> 快速删除当前媒体。
 
-> 纯前端项目，视频全部来自本机磁盘，不上传任何数据。
+> 纯前端项目，媒体全部来自本机磁盘，不上传任何数据。
 
 ## 技术栈
 
@@ -34,6 +35,7 @@
 | <kbd>N</kbd> | 播放列表面板 |
 | <kbd>S</kbd> | 设置面板 |
 | <kbd>A</kbd> | 循环切换画面适配（完整显示 / 填满裁切 / 拉伸铺满） |
+| <kbd>V</kbd> | 循环切换界面呈现（自动识别 / 始终视频 / 始终音乐） |
 | <kbd>R</kbd> | 画面转向：当前视频顺时针 90°（0 → 90 → 180 → 270 → 0） |
 | <kbd>Shift</kbd>+<kbd>R</kbd> | 水平镜像（左右翻转） |
 | <kbd>F</kbd> / <kbd>Esc</kbd> | 全屏 / 退出全屏 |
@@ -189,21 +191,27 @@ local-shorts-player/
 ├─ package.json
 ├─ tsconfig.json / tsconfig.node.json / env.d.ts
 ├─ vite.config.ts
+├─ public/
+│  └─ media-sw.js                # 媒体 Service Worker（Range 直通 + 缓存兜底）
+├─ docs/
+│  └─ cloud-media-analysis.md    # 网盘 / 远程播放的技术分析
 ├─ tools/
 │  └─ reveal-helper.mjs          # 「打开所在文件夹」的本机小助手（零依赖，可选运行）
 └─ src/
-   ├─ main.ts                     # 应用入口
+   ├─ main.ts                     # 应用入口（含 Service Worker 注册）
    ├─ App.vue
    ├─ router/index.ts             # / 导入页、/play 播放页
-   ├─ assets/main.css             # 全局主题变量与基础样式
-   ├─ types/index.ts              # VideoItem / VideoSource / OsdMessage / PlayerPrefs / ActionId
+   ├─ assets/main.css             # 全局主题变量、安全区、移动端基础样式
+   ├─ types/index.ts              # VideoItem / VideoSource / MediaKind / OsdMessage / PlayerPrefs
    ├─ store/player.ts             # pinia：多来源、播放列表(合并/分开)、排序、音量、按键、删除、回收站
    ├─ composables/
    │  ├─ useVideoControl.ts       # 播放内核状态（时间/时长/暂停/分辨率）与操作代理
-   │  ├─ useShortcuts.ts          # 滚轮切换 + 全局键盘快捷键（按键查表分发）
+   │  ├─ useShortcuts.ts          # 滚轮 + 键盘快捷键（按键查表分发）+ 触摸手势
+   │  ├─ useMediaSession.ts       # 移动端：锁屏/通知栏控制（Media Session）+ 防息屏（Wake Lock）
    │  └─ useIdle.ts               # 鼠标静止自动隐藏控件
    ├─ utils/
-   │  ├─ media.ts                 # 格式判断、自然排序、时间/体积格式化
+   │  ├─ media.ts                 # 音视频格式判断、媒体类型识别、自然排序、时间/体积格式化
+   │  ├─ cover.ts                 # 音频封面的确定性生成（零依赖、无 IO）
    │  ├─ keymap.ts                # 动作定义、默认按键、组合键解析与展示
    │  ├─ fs.ts                    # 目录递归扫描、回收站删除、还原
    │  ├─ reveal.ts                # 本地小助手客户端 + 各来源根目录登记表
@@ -214,17 +222,18 @@ local-shorts-player/
    ├─ components/
    │  ├─ SvgIcon.vue              # 内置 SVG 图标集
    │  └─ player/
-   │     ├─ VideoStage.vue        # <video> 宿主 + 事件同步 + 错误兜底
+   │     ├─ VideoStage.vue        # <video>/<audio> 宿主 + 事件同步 + 错误兜底 + 音乐界面插槽
+   │     ├─ MusicStage.vue        # 音乐界面（生成封面 + 标题 + 专辑信息）
    │     ├─ PlayPulse.vue         # 播放 / 暂停的大图标闪现
    │     ├─ ProgressBar.vue       # 可拖拽进度条（含缓冲、悬停时间）
    │     ├─ VolumeControl.vue     # 音量滑块 + 静音
    │     ├─ PlaylistPanel.vue     # 播放列表（搜索、排序、文件夹筛选条、当前项高亮、滚动跟随）
-   │     ├─ SettingsPanel.vue     # 操作 / 快捷键 / 画面 / 播放 / 列表 / 重复视频 / 文件夹 / 删除 / 数据源
+   │     ├─ SettingsPanel.vue     # 操作 / 快捷键 / 画面 / 播放 / 列表 / 重复视频 / 文件夹 / 删除 / 数据源 / 移动端
    │     ├─ DuplicatePanel.vue    # 重复视频：整屏对话框（内置预览播放器 + 分组勾选 + 批量删除）
    │     ├─ FolderHelperPanel.vue # 本地小助手状态 + 各来源根目录登记与校验
    │     └─ OsdToast.vue          # 屏上提示（pill / ghost / toast 三种样式）
    └─ views/
-      ├─ home/ImportView.vue      # 导入首页（选择目录 / 拖拽 / 恢复上次）
+      ├─ home/ImportView.vue      # 导入首页（选择目录 / 拖拽 / 恢复上次 / 移动端提示）
       └─ player/PlayerView.vue    # 播放页（组合上述组件与交互）
 ```
 
@@ -311,6 +320,64 @@ local-shorts-player/
 > 顺带一提：`backdrop-filter` 也从这些控件上全部移除了。顶栏底栏会做 `opacity` / `transform` 动画，
 > 而 `backdrop-filter` 放在带动画的祖先里会因为 backdrop root 变化产生矩形伪影 —— 这也是"只有顶部出问题"的嫌疑点之一。
 > 面板（设置 / 列表 / 重复视频）同样是带 `opacity + transform` 的滑入动画，所以也不再使用模糊背景。
+
+## 音乐播放与移动端
+
+### 音频支持
+
+导入时同时扫描视频与音频（mp3 / m4a / aac / flac / wav / opus / ogg / mka …）。
+
+音频走**音乐界面**（生成封面 + 标题 + 专辑信息），视频仍走原来的全屏播放。
+
+判定逻辑见 `utils/media.ts` 的 `mediaKindOf`：
+
+- 只命中音频扩展名 → 音频
+- 只命中视频扩展名 → 视频
+- **两边都命中**（`.ogg` / `.webm` 这类容器既能装音频也能装视频）→ 先归为视频，
+  由播放器按实际轨道处理
+
+如果某个 `.webm` 其实是纯音频，按 <kbd>V</kbd> 或「设置 → 播放 → 界面呈现」手动指定
+「始终音乐」即可。
+
+> **实现要点**：音频用 `<audio>` 宿主而不是"零尺寸 `<video>`"。
+> 属性与事件几乎完全一致（都继承 `HTMLMediaElement`），所以 `useVideoControl`
+> 那套播放内核一行都不用改；但移动端系统会按**音频会话**处理，
+> 锁屏与媒体通知的行为更正确。
+
+### 移动端适配
+
+| 能力 | 说明 |
+| --- | --- |
+| 触摸手势 | 上下滑切换（与滚轮同语义）、双击快进/快退 |
+| 安全区 | 适配刘海 / 灵动岛 / home indicator（`env(safe-area-inset-*)`） |
+| 点击区域 | 触摸设备下控件放大到 44px（Apple HIG / Material 最小可点尺寸） |
+| 视口 | `100dvh` 跟随地址栏收放；`viewport-fit=cover` |
+| 布局 | 左侧竖排轨道在窄屏改为**底部横排**（拇指可达）；面板占满整屏 |
+| 防误触 | 滑动阈值 48px、主轴偏置 1.4、慢速拖动不触发切换（那是拖进度条） |
+
+### 锁屏控制（Media Session）与防息屏（Wake Lock）
+
+设置 → **移动端**：
+
+- **锁屏 / 通知栏控制**：把当前曲目交给系统，Android / iOS 的锁屏、
+  通知栏、耳机线控、车载蓝牙都能控制播放与上下曲，**不需要装 App**。
+  含 `seekto`，所以车机拖动进度条也生效。
+- **播放时阻止息屏**：仅音乐模式生效 —— 听歌时屏幕自己灭掉会打断操作；
+  视频场景不启用，因为用户本来就在看。
+
+两者都做了能力探测，不支持的浏览器上开关会置灰并说明原因；
+非安全上下文（非 https / localhost）会额外提示。
+
+### 后台播放稳定性（Service Worker）
+
+`public/media-sw.js` 接管媒体请求：
+
+- 带 `Range` 的请求**直接放行**（缓存 206 分片会让后续播放读到残缺数据）
+- 完整 200 响应写入 Cache，网络中断时用缓存兜底
+- 覆盖式更新（`skipWaiting` + `clients.claim`），不做全量预缓存以免浪费流量
+- 注册失败静默忽略，`file://` 下不注册（非安全上下文）
+
+> 手机上装到桌面（添加到主屏幕）后以 PWA 方式运行，后台播放最稳。
 
 ## 播放列表排序
 

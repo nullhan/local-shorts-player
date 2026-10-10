@@ -19,10 +19,22 @@ import type { VideoItem } from '@/types'
 import { hashString } from '@/utils/media'
 import type { VideoTransform } from '@/utils/transforms'
 
-const props = defineProps<{ item: VideoItem | null; transform: VideoTransform }>()
+const props = defineProps<{
+  item: VideoItem | null
+  transform: VideoTransform
+  /** 音频模式下只保留一个隐藏的 <audio>，界面由 MusicStage 负责 */
+  audioOnly?: boolean
+}>()
 
 const store = usePlayerStore()
 
+/**
+ * 视频用 <video>、音频用 <audio>。
+ * 两者在事件／属性上几乎完全一致（都继承 HTMLMediaElement），
+ * 所以下面全部逻辑共用一个引用，只是宿主标签不同。
+ * 用 <audio> 而非"零尺寸 <video>"的好处：移动端系统会按音频会话处理，
+ * 锁屏与媒体通知的行为更正确。
+ */
 const videoRef = ref<HTMLVideoElement | null>(null)
 const mediaReady = ref(false)
 const mediaError = ref(false)
@@ -44,9 +56,12 @@ const transformClasses = computed(() => [
   { flipped: props.transform.flip }
 ])
 
+/** 音频模式下用 <audio>，否则用 <video>；两者事件/属性一致，共用一个 ref */
+const isAudioHost = computed(() => props.audioOnly || props.item?.kind === 'audio')
+
 /** 只有首屏（或换目录后）才需要占位海报 */
 const showPoster = computed(
-  () => !mediaReady.value && !mediaError.value && !everRendered.value
+  () => !isAudioHost.value && !mediaReady.value && !mediaError.value && !everRendered.value
 )
 
 /** 常见比例的友好名称，便于一眼判断画面是否被裁切 */
@@ -301,14 +316,36 @@ onBeforeUnmount(() => {
 </script>
 
 <template>
-  <div class="video-stage" @click="onVideoClick">
+  <div class="video-stage" :class="{ 'audio-only': isAudioHost }" @click="onVideoClick">
+    <!-- 音频模式：可视化界面由外部插槽提供（MusicStage） -->
+    <slot v-if="isAudioHost" />
+
     <div v-if="showPoster" class="poster" :style="{ '--hue': `${posterHue}` }">
       <span class="poster-name">{{ current?.name || '未选择视频' }}</span>
       <span class="poster-tip">加载中…</span>
     </div>
 
+    <!-- 音频：系统按音频会话处理（移动端锁屏行为更正确），界面上不可见 -->
+    <audio
+      v-if="current && isAudioHost"
+      :key="videoKey"
+      ref="videoRef"
+      class="audio-el"
+      :src="current.url"
+      preload="metadata"
+      @loadedmetadata="onLoadedMetadata"
+      @loadeddata="onLoadedData"
+      @timeupdate="onTimeUpdate"
+      @durationchange="onTimeUpdate"
+      @progress="onProgress"
+      @play="onPlay"
+      @pause="onPause"
+      @ended="onEnded"
+      @error="onError"
+    />
+
     <video
-      v-if="current"
+      v-else-if="current"
       :key="videoKey"
       ref="videoRef"
       class="video-el"
@@ -327,7 +364,7 @@ onBeforeUnmount(() => {
       @error="onError"
     />
 
-    <div v-if="current && mediaReady && !mediaError" class="res-tag">
+    <div v-if="current && mediaReady && !mediaError && !isAudioHost" class="res-tag">
       {{ videoNativeWidth || '?' }}×{{ videoNativeHeight || '?' }}
       <template v-if="ratioLabel"> · {{ ratioLabel }}</template>
       <template v-if="store.fitMode !== 'contain'"> · {{ FIT_MODE_LABELS[store.fitMode] }}</template>
@@ -335,9 +372,12 @@ onBeforeUnmount(() => {
 
     <div v-if="mediaError" class="error-mask">
       <SvgIcon name="close" :size="30" />
-      <p>无法解码该视频格式</p>
+      <p>{{ isAudioHost ? '无法播放该音频格式' : '无法解码该视频格式' }}</p>
       <span>{{ current?.name }}</span>
-      <em>可按 <kbd>Delete</kbd> 删除，或用 <kbd>滚轮</kbd> 跳过；无法播放的编码需转码为 H.264 / MP4</em>
+      <em>
+        可按 <kbd>Delete</kbd> 删除，或用 <kbd>滚轮</kbd> 跳过；
+        {{ isAudioHost ? '不支持的编码需转为 MP3 / AAC' : '无法播放的编码需转码为 H.264 / MP4' }}
+      </em>
     </div>
   </div>
 </template>
@@ -356,6 +396,19 @@ onBeforeUnmount(() => {
   will-change: transform;
   /* 给 .video-el 提供 cqw / cqh 基准：旋转 90° 时要用「容器的另一条边」当宽度 */
   container-type: size;
+}
+
+/*
+ * 音频模式：宿主只是概念上的，真正的界面由 MusicStage 负责。
+ * 这里保持透明、不拦截点击（点击切换播放交给 PlayerView 处理）。
+ */
+.audio-only {
+  background: transparent;
+  cursor: default;
+}
+
+.audio-el {
+  display: none;
 }
 
 .video-el {

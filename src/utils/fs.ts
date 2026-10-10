@@ -1,5 +1,5 @@
 import type { ScanProgress, SourceMode, VideoItem } from '@/types'
-import { hashString, isVideoFile, naturalCompare } from './media'
+import { hashString, isMediaFile, mediaKindOf, naturalCompare } from './media'
 
 export const TRASH_DIR = '.shorts-trash'
 
@@ -44,6 +44,7 @@ function buildItem(
     contentKey,
     sourceId: source.id,
     name: segments[segments.length - 1],
+    kind: mediaKindOf(segments[segments.length - 1]),
     url: URL.createObjectURL(file),
     file,
     handle,
@@ -90,7 +91,7 @@ async function walkDirectory(
       continue
     }
 
-    if (!isVideoFile(name)) {
+    if (!isMediaFile(name)) {
       skipped += 1
       continue
     }
@@ -148,7 +149,7 @@ export async function scanByFileList(
     if (seen.has(relativePath) || isUnderTrash(relativePath)) continue
     seen.add(relativePath)
 
-    if (!isVideoFile(file.name)) {
+    if (!isMediaFile(file.name)) {
       skipped += 1
       continue
     }

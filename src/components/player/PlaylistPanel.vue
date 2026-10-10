@@ -391,4 +391,42 @@ function pick(id: string) {
   color: var(--text-muted);
   font-size: 11px;
 }
+
+/* 手机上让出整屏，列表项加大到可点尺寸 */
+@media (hover: none), (max-width: 820px) {
+  .playlist-panel {
+    top: var(--safe-top);
+    right: 0;
+    bottom: 0;
+    left: 0;
+    width: auto;
+    border: none;
+    border-radius: 0;
+    padding-bottom: var(--safe-bottom);
+  }
+
+  .head {
+    padding: 12px 14px 8px;
+  }
+
+  .head .close,
+  .foot {
+    display: none;
+  }
+
+  .search input {
+    height: 38px;
+    font-size: 15px; /* ≥16px 才不会触发 iOS 自动缩放，这里折中 */
+  }
+
+  .item {
+    padding: 12px 10px;
+    contain-intrinsic-size: 62px;
+  }
+
+  .sort-chip,
+  .sort-dir {
+    height: 30px;
+  }
+}
 </style>

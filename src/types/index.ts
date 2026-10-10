@@ -17,7 +17,10 @@ export interface VideoSource {
 /** 多个来源如何组织成播放列表 */
 export type PlaylistMode = 'merged' | 'separate'
 
-/** 视频条目 */
+/** 条目是音频还是视频 —— 决定用哪个渲染器、以及界面走哪套布局 */
+export type MediaKind = 'video' | 'audio'
+
+/** 媒体条目（视频或音频） */
 export interface VideoItem {
   /**
    * 播放列表内唯一，已按来源作用域化。
@@ -34,6 +37,11 @@ export interface VideoItem {
   sourceId: string
   /** 文件名 */
   name: string
+  /**
+   * 音频 / 视频。按扩展名初判，视频侧的实际轨道以浏览器解出来的为准
+   * （`.ogg` / `.webm` 这类歧义容器会先归到视频，避免把带画面的文件当音乐播）。
+   */
+  kind: MediaKind
   /** blob: 播放地址 */
   url: string
   /** 源文件（导入时的快照） */
@@ -49,6 +57,16 @@ export interface VideoItem {
   mtime: number
 }
 
+/** 一个网盘 / 远程来源（后续接入，见 README 的技术分析） */
+export interface RemoteSourceMeta {
+  /** 协议类型 */
+  protocol: 'webdav' | 'local-helper' | 'http'
+  /** 服务地址 */
+  endpoint: string
+  /** 用户名（可选） */
+  username?: string
+}
+
 export type DeleteMode = 'trash' | 'permanent'
 
 /** 列表循环 / 播完暂停 */
@@ -59,7 +77,20 @@ export type FitMode = 'contain' | 'cover' | 'fill'
 
 export type SourceMode = 'handle' | 'fallback'
 
-export type PanelType = 'playlist' | 'settings' | 'help' | 'duplicates' | 'folderHelper' | null
+/** 来源种类：本地文件夹 or 远程（网盘） */
+export type SourceKind = 'local' | 'remote'
+
+export type PanelType =
+  | 'playlist'
+  | 'settings'
+  | 'help'
+  | 'duplicates'
+  | 'folderHelper'
+  | 'nowPlaying'
+  | null
+
+/** 音频的界面呈现方式 */
+export type ViewMode = 'auto' | 'video' | 'music'
 
 /** 播放列表排序字段 */
 export type SortKey = 'default' | 'name' | 'size' | 'mtime'
@@ -88,6 +119,7 @@ export type ActionId =
   | 'toggleSettings'
   | 'toggleHelp'
   | 'cycleFit'
+  | 'cycleView'
   | 'rotateVideo'
   | 'flipVideo'
   | 'toggleFullscreen'
@@ -118,6 +150,12 @@ export interface PlayerPrefs {
   keybindings: Keymap
   /** 多个来源合并成同一列表，还是按来源分开 */
   playlistMode: PlaylistMode
+  /** 界面呈现：自动（认音频就进音乐模式）/ 强制视频 / 强制音乐 */
+  viewMode: ViewMode
+  /** 移动端：锁屏与通知栏显示媒体信息（Media Session） */
+  mediaSession: boolean
+  /** 播放时阻止屏幕自动休眠（Wake Lock） */
+  keepAwake: boolean
 }
 
 /** 屏上提示（音量 / 进度 / 删除反馈） */

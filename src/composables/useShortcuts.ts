@@ -61,6 +61,99 @@ export function useWheelNavigate(target: Ref<HTMLElement | null>) {
   })
 }
 
+/**
+ * 移动端触摸手势：
+ * - 上下滑：切上一个 / 下一个（与滚轮同一语义）
+ * - 左右双击：快退 / 快进（和桌面 ←→ 对齐）
+ * - 单击：播放 / 暂停（由页面已有的 click 处理，这里不重复绑定）
+ *
+ * 用 touchstart/touchend 手动算，不引手势库：
+ * 需要判断的只有「位移方向 + 距离阈值 + 是否是双击」。
+ */
+const SWIPE_MIN_PX = 48
+const SWIPE_MAX_TIME = 600
+/** 横向位移超过纵向这么多才判定为"横向滑动"，避免斜着划时误触 */
+const SWIPE_AXIS_BIAS = 1.4
+const DOUBLE_TAP_MS = 300
+
+export function useTouchGestures(target: Ref<HTMLElement | null>) {
+  const store = usePlayerStore()
+
+  let startX = 0
+  let startY = 0
+  let startAt = 0
+  let lastTapAt = 0
+  let lastTapX = 0
+  let tracking = false
+
+  function onTouchStart(event: TouchEvent) {
+    if (store.activePanel) return
+    // 面板 / 输入框 / 可滚动区域里的手势交还给它们
+    if ((event.target as HTMLElement)?.closest('input, textarea, .scrollable, aside')) return
+    const touch = event.touches[0]
+    if (!touch) return
+    startX = touch.clientX
+    startY = touch.clientY
+    startAt = Date.now()
+    tracking = true
+  }
+
+  function onTouchEnd(event: TouchEvent) {
+    if (!tracking) return
+    tracking = false
+    const touch = event.changedTouches[0]
+    if (!touch) return
+
+    const dx = touch.clientX - startX
+    const dy = touch.clientY - startY
+    const elapsed = Date.now() - startAt
+
+    // 慢速拖动多半是在拖动进度条，不当作切换手势
+    if (elapsed > SWIPE_MAX_TIME) return
+
+    const absX = Math.abs(dx)
+    const absY = Math.abs(dy)
+
+    // 短距离轻点：可能是双击
+    if (absX < 24 && absY < 24) {
+      const now = Date.now()
+      if (now - lastTapAt < DOUBLE_TAP_MS && Math.abs(touch.clientX - lastTapX) < 40) {
+        lastTapAt = 0
+        const step = store.seekStep
+        const actual = seekBy(dx >= 0 ? step : -step)
+        store.showSeekOsd(actual || step)
+        return
+      }
+      lastTapAt = now
+      lastTapX = touch.clientX
+      return
+    }
+
+    // 竖向滑动 → 切换（和滚轮一致：内容往上移 = 看下一个）
+    if (absY > SWIPE_MIN_PX && absY > absX * SWIPE_AXIS_BIAS) {
+      if (dy < 0) store.next()
+      else store.prev()
+      return
+    }
+
+    // 横向滑动 → 左右各一下等于点按，这里不用（留给双击，避免误触）
+  }
+
+  onMounted(() => {
+    const el = target.value
+    if (!el) return
+    el.addEventListener('touchstart', onTouchStart, { passive: true })
+    el.addEventListener('touchend', onTouchEnd, { passive: true })
+  })
+
+  onBeforeUnmount(() => {
+    const el = target.value
+    if (!el) return
+    el.removeEventListener('touchstart', onTouchStart)
+    el.removeEventListener('touchend', onTouchEnd)
+  })
+}
+
 function isTypingTarget(target: EventTarget | null): boolean {
   const el = target as HTMLElement | null
   if (!el) return false
@@ -161,6 +254,10 @@ export function useKeyboardShortcuts(options: { container: Ref<HTMLElement | nul
 
       case 'cycleFit':
         store.cycleFitMode()
+        break
+
+      case 'cycleView':
+        store.cycleViewMode()
         break
 
       case 'rotateVideo':

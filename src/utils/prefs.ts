@@ -6,7 +6,8 @@ import type {
   PlayerPrefs,
   PlaylistMode,
   SortDir,
-  SortKey
+  SortKey,
+  ViewMode
 } from '@/types'
 import { ACTION_IDS, DEFAULT_KEYMAP } from './keymap'
 
@@ -28,6 +29,7 @@ const DELETE_MODES: DeleteMode[] = ['trash', 'permanent']
 const SORT_KEYS: SortKey[] = ['default', 'name', 'size', 'mtime']
 const SORT_DIRS: SortDir[] = ['asc', 'desc']
 const PLAYLIST_MODES: PlaylistMode[] = ['merged', 'separate']
+const VIEW_MODES: ViewMode[] = ['auto', 'video', 'music']
 
 /** 方向键步进允许的范围（秒） */
 export const SEEK_STEP_MIN = 1
@@ -47,7 +49,10 @@ export const DEFAULT_PREFS: PlayerPrefs = {
   sortKey: 'default',
   sortDir: 'asc',
   keybindings: { ...DEFAULT_KEYMAP },
-  playlistMode: 'merged'
+  playlistMode: 'merged',
+  viewMode: 'auto',
+  mediaSession: true,
+  keepAwake: true
 }
 
 function pickEnum<T extends string>(value: unknown, allowed: T[], fallback: T): T {
@@ -99,7 +104,10 @@ function sanitize(raw: unknown): PlayerPrefs {
     sortKey: pickEnum(input.sortKey, SORT_KEYS, DEFAULT_PREFS.sortKey),
     sortDir: pickEnum(input.sortDir, SORT_DIRS, DEFAULT_PREFS.sortDir),
     keybindings: pickKeymap(input.keybindings),
-    playlistMode: pickEnum(input.playlistMode, PLAYLIST_MODES, DEFAULT_PREFS.playlistMode)
+    playlistMode: pickEnum(input.playlistMode, PLAYLIST_MODES, DEFAULT_PREFS.playlistMode),
+    viewMode: pickEnum(input.viewMode, VIEW_MODES, DEFAULT_PREFS.viewMode),
+    mediaSession: pickBool(input.mediaSession, DEFAULT_PREFS.mediaSession),
+    keepAwake: pickBool(input.keepAwake, DEFAULT_PREFS.keepAwake)
   }
 }
 
